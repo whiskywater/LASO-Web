@@ -29,6 +29,8 @@ test("state presentation distinguishes active, successful, and failed work", () 
   assert.equal(UI.pending("Approved"), false);
   assert.equal(UI.terminal("Cancelled"), true);
   assert.equal(UI.terminal("Running"), false);
+  assert.equal(UI.stateCopy("WaitingForApproval"), "Needs your approval");
+  assert.equal(UI.stateCopy("Completed"), "Completed");
 });
 
 test("timestamps become relative labels and invalid dates are omitted", () => {
@@ -42,4 +44,30 @@ test("untrusted values remain data; model creates labels without HTML interpreta
   const malicious = { id: "x", pipeline_id: "<img src=x onerror=alert(1)>" };
   assert.equal(UI.runTitle(malicious), "<Img Src=X Onerror=Alert(1)>");
   assert.equal(typeof UI.runTitle(malicious), "string");
+});
+
+test("thread summaries use only returned lifecycle events and timestamps", () => {
+  const run = { state: "Completed", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:01Z" };
+  const events = [{ type: "run.completed", time: "2026-01-01T00:00:01Z" }, { type: "node.started" }, { type: "run.created" }];
+  assert.equal(UI.activitySummary(events, run), "Completed in 1 second · 3 events");
+  assert.equal(UI.activitySummary([], { state: "Running" }), "In progress · 0 events");
+  assert.equal(UI.durationLabel("bad", "also bad"), "");
+});
+
+test("LASO output prefers readable fields and labels unknown message types conservatively", () => {
+  assert.equal(UI.outputText({ greeting: "Hello from LASO", input: { prompt: "private task" } }), "Hello from LASO");
+  assert.equal(UI.outputText({ answer_count: 3, input: { prompt: "hidden request" } }), "Answer Count: 3");
+  assert.equal(UI.outputText({}), "");
+  assert.equal(UI.messageLabel("laso.data"), "LASO");
+  assert.equal(UI.messageLabel("laso.data", { error: "step failed" }), "Error");
+  assert.equal(UI.messageLabel("worker.result"), "Result");
+  assert.equal(UI.messageLabel("pipeline.error"), "Error");
+});
+
+test("workspace routes reopen a run after refresh and safely encode identifiers", () => {
+  const hash = UI.routeHash("thread", "run/id with spaces");
+  assert.deepEqual(UI.route(hash), { view: "thread", runId: "run/id with spaces" });
+  assert.deepEqual(UI.route("#/approvals"), { view: "approvals", runId: "" });
+  assert.deepEqual(UI.route("#/unknown"), { view: "new", runId: "" });
+  assert.deepEqual(UI.route("#/run/%E0%A4%A"), { view: "new", runId: "" });
 });

@@ -80,5 +80,93 @@
     return relative ? relative.charAt(0).toUpperCase() + relative.slice(1) : "Time unavailable";
   }
 
-  return { items, stateOf, stateTone, terminal, pending, humanize, promptOf, pipelineName, runTitle, relativeTime, dateLabel };
+  function stateCopy(value) {
+    const state = String(value || "unknown").toLowerCase().replace(/[._\s-]/g, "");
+    const copy = {
+      queued: "Queued for LASO",
+      starting: "Starting",
+      running: "In progress",
+      waiting: "Waiting",
+      waitingforapproval: "Needs your approval",
+      awaitingapproval: "Needs your approval",
+      waitingforinput: "Needs your input",
+      awaitinginput: "Needs your input",
+      completed: "Completed",
+      complete: "Completed",
+      failed: "Failed",
+      cancelled: "Cancelled",
+      canceled: "Cancelled",
+      unknown: "Status unavailable"
+    };
+    return copy[state] || humanize(value || "Status unavailable");
+  }
+
+  function durationLabel(start, end) {
+    const first = Date.parse(start || "");
+    const last = Date.parse(end || "");
+    if (!Number.isFinite(first) || !Number.isFinite(last) || last < first) return "";
+    const seconds = Math.round((last - first) / 1000);
+    if (seconds < 1) return "under a second";
+    if (seconds < 60) return `${seconds} second${seconds === 1 ? "" : "s"}`;
+    const minutes = Math.floor(seconds / 60);
+    const remainder = seconds % 60;
+    return remainder ? `${minutes}m ${remainder}s` : `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
+
+  function activitySummary(events, run) {
+    const count = Array.isArray(events) ? events.length : 0;
+    const state = String(stateOf(run) || "").toLowerCase();
+    const terminalRun = terminal(state);
+    const endEvent = [...(events || [])]
+      .filter(event => /run\.(completed|failed|cancelled|canceled)$/i.test(event.type || ""))
+      .sort((a, b) => Date.parse(a.occurred_at || a.time || a.ingested_at || "")
+        - Date.parse(b.occurred_at || b.time || b.ingested_at || "")).pop();
+    const elapsed = terminalRun && durationLabel(run?.created_at, endEvent?.occurred_at || endEvent?.time || endEvent?.ingested_at || run?.updated_at);
+    const stateLabel = stateCopy(state);
+    const summary = elapsed ? `${stateLabel} in ${elapsed}` : stateLabel;
+    return `${summary} · ${count} event${count === 1 ? "" : "s"}`;
+  }
+
+  function outputText(payload) {
+    if (typeof payload === "string") return payload.trim();
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return "";
+    const fields = ["summary", "text", "content", "answer", "greeting", "output", "result", "message"];
+    const values = [];
+    for (const key of fields) {
+      const value = payload[key];
+      if (typeof value === "string" && value.trim()) values.push(value.trim());
+      else if (value && typeof value === "object") values.push(JSON.stringify(value, null, 2));
+    }
+    if (values.length) return [...new Set(values)].join("\n\n");
+    const transportFields = new Set(["input", "id", "run_id", "pipeline_id", "node_id", "metadata", "provenance"]);
+    return Object.entries(payload)
+      .filter(([key, value]) => !transportFields.has(key.toLowerCase()) && ["string", "number", "boolean"].includes(typeof value))
+      .map(([key, value]) => `${humanize(key)}: ${String(value)}`).join("\n");
+  }
+
+  function messageLabel(type, payload = {}) {
+    const value = String(type || "").toLowerCase();
+    if (value.includes("error") || value.includes("failure") || (payload && (payload.error || payload.failure))) return "Error";
+    if (value.includes("result") || value.includes("output")) return "Result";
+    if (value.includes("worker")) return "Worker";
+    return "LASO";
+  }
+
+  function route(hash) {
+    const value = String(hash || "").replace(/^#\/?/, "");
+    if (value.startsWith("run/")) {
+      try { return { view: "thread", runId: decodeURIComponent(value.slice(4)) }; }
+      catch { return { view: "new", runId: "" }; }
+    }
+    const views = ["new", "history", "workers", "approvals", "schedules", "system"];
+    return { view: views.includes(value) ? value : "new", runId: "" };
+  }
+
+  function routeHash(view, runId = "") {
+    return view === "thread" && runId ? `#/run/${encodeURIComponent(String(runId))}`
+      : `#/${["new", "history", "workers", "approvals", "schedules", "system"].includes(view) ? view : "new"}`;
+  }
+
+  return { items, stateOf, stateTone, terminal, pending, humanize, promptOf, pipelineName, runTitle,
+    relativeTime, dateLabel, stateCopy, durationLabel, activitySummary, outputText, messageLabel, route, routeHash };
 });

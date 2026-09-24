@@ -1,6 +1,6 @@
 # LASO-Web
 
-LASO-Web is a small, optional browser operator interface for [LASO](https://github.com/Registered-Agent-Attorney/LASO). It is a separate application and repository: LASO remains the orchestration/runtime core; this project presents a browser UI over LASO's existing JSON HTTP API.
+LASO-Web is a lightweight, task-first workspace for [LASO](https://github.com/Registered-Agent-Attorney/LASO). It is a separate optional application: LASO remains the orchestration/runtime core, while this project provides a friendly browser interface over LASO's existing JSON HTTP API.
 
 The architecture is intentionally simple:
 
@@ -10,7 +10,7 @@ Browser → LASO-Web (static UI + bounded same-origin API adapter) → LASO HTTP
 
 The adapter keeps LASO credentials out of browser JavaScript and avoids needing permissive CORS support in LASO. The application uses Python's standard library only; there is no npm build or runtime database.
 
-The screenshots show a safe deterministic Hello-pipeline run:
+The workspace and run-thread screenshots use a safe deterministic Hello-pipeline fixture:
 
 ![Desktop task workspace](docs/images/workspace.png)
 
@@ -20,12 +20,12 @@ The screenshots show a safe deterministic Hello-pipeline run:
 
 ## Workspace experience and API coverage
 
-LASO-Web opens on a task workspace rather than a metrics dashboard. Choose a registered pipeline, describe the task, and follow that run from its returned state, event history, and messages. Recent runs are shown by task/pipeline label; identifiers and full API objects remain available in expandable technical details. The layout works as a collapsible desktop sidebar and a mobile navigation drawer.
+LASO-Web opens on a task workspace rather than a metrics dashboard. Choose a registered pipeline, describe the task, and follow that run as a thread: your submitted request, readable output LASO actually returned, and a compact state summary. Lifecycle activity, worker records, and raw API objects remain available in collapsed details. Recent runs are shown by task/pipeline label; a run link survives page refresh and browser back/forward navigation. The layout works as a collapsible desktop sidebar and a mobile navigation drawer.
 
 Based on LASO's published `/api/v1` interface (see its [API reference](https://github.com/Registered-Agent-Attorney/LASO/blob/main/docs/access.md)), the UI currently provides:
 
 * recurring health/version and list polling, plus run-specific `/events` and `/messages` polling;
-* a task-first composer for an explicitly selected registered pipeline, with prompt input and an advanced custom JSON object option;
+* a task-first composer for an explicitly selected registered pipeline, with keyboard submission and an advanced custom JSON object option;
 * recent work navigation, a worker-job history, and run workspaces with real LASO state, event history, returned messages/results, errors, and cancellation where supported;
 * worker inventory and capabilities from `/workers`;
 * contextual pending approvals/worker requests on their associated run, plus a full decision queue;
@@ -69,7 +69,7 @@ The LASO URL is deployment configuration, not browser input. The server forwards
 
 Open LASO-Web and choose one of the registered pipelines. Describe the task in ordinary text; by default it is sent as the pipeline input field `prompt`. Pipelines may expect another input shape, so **Options · custom pipeline input** lets you enter the JSON object required by that pipeline. LASO-Web does not choose a pipeline automatically because LASO does not expose automatic pipeline selection.
 
-After LASO accepts a run, its workspace refreshes automatically every five seconds and shows only states, events, messages, and data returned by LASO. There is no fabricated progress percentage or generated worker narration. If the pipeline requires another input schema, inspect its definition in LASO and use the advanced input option. The **Approvals** view submits decisions to LASO's durable approval/request endpoints; when a pending record has a matching run ID, it is also shown in that run. LASO remains authoritative for policy.
+After LASO accepts a run, its workspace refreshes automatically every five seconds without repeatedly replacing unchanged content. Activity and technical details start collapsed, and remain available while keeping the returned result in focus. There is no fabricated progress percentage, generated worker narration, or streaming claim. Enter submits the task; Shift+Enter inserts a newline. If the pipeline requires another input schema, inspect its definition in LASO and use the advanced input option. The **Approvals** view submits decisions to LASO's durable approval/request endpoints; when a pending record has a matching run ID, it is also shown in that run. LASO remains authoritative for policy.
 
 **Workers**, **Approvals**, **Schedules**, and **System** remain available from the secondary navigation. LASO-Web only exposes API operations that LASO actually supports; worker assignment, pipeline authoring, schedule editing, and artifact browsing are not invented in the UI.
 

@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-* Replace the dashboard-first landing page with a task-first workspace, recent-run navigation, and run threads built from LASO's returned messages/events.
-* Add automatic five-second refresh/reconnection, contextual approval cards, a custom pipeline-input disclosure, responsive sidebar/drawer navigation, and clearer worker/system views.
-* Keep pipeline choice explicit and preserve the server-side API allowlist and authentication boundary.
+* Refine run threads to foreground LASO's actual readable output, with lifecycle activity, duplicate/raw message data, and technical metadata progressively disclosed.
+* Keep polling updates from replacing unchanged thread content; preserve focused disclosures and add shareable/history-aware run routes that restore after refresh.
+* Simplify the task composer, remove duplicated recent-run cards, improve human-readable states and transient confirmations, and prevent horizontal overflow during responsive viewport changes.
+* Quietly handle clients disconnecting while a response is being written; preserve the server-side API allowlist and authentication boundary.
 
 ## 0.1.0
 

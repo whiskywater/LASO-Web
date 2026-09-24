@@ -159,6 +159,18 @@ class WebTests(unittest.TestCase):
         self.assertEqual(raised.exception.status, 502)
         self.assertLess(time.monotonic() - started, 0.15)
 
+    def test_client_disconnect_while_sending_response_is_quietly_handled(self):
+        class DisconnectedClient:
+            def write(self, _body):
+                raise BrokenPipeError("client closed")
+
+        handler = object.__new__(server.Handler)
+        handler.wfile = DisconnectedClient()
+        handler.send_response = lambda *_args: None
+        handler.send_header = lambda *_args: None
+        handler.end_headers = lambda: None
+        handler._send(200, b"response", "text/plain")
+
     def test_http_ui_proxy_origin_and_body_validation(self):
         app = server.WebServer(self.config(password="sixteen-character-password"))
         thread = threading.Thread(target=app.serve_forever, daemon=True)

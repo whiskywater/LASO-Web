@@ -2,11 +2,13 @@
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const UI = window.LasoUI;
+const initialRoute = UI.route(window.location.hash);
 const state = {
-  data: {}, errors: {}, activeView: "new", activeRunId: "", runMessages: [], runEvents: [],
+  data: {}, errors: {}, activeView: initialRoute.view, activeRunId: initialRoute.runId, runMessages: [], runEvents: [],
   draft: "", customInput: "", selectedPipeline: "", lastPipelineChoices: "", refreshing: false,
   hasLoaded: false, lastPipelineError: "", refreshPending: false,
-  mobileOpen: false, collapsed: false, requestNotes: Object.create(null)
+  mobileOpen: false, collapsed: false, requestNotes: Object.create(null), openDetails: new Set(),
+  sidebarKey: "", renderKey: "", noticeTimer: 0
 };
 const endpoints = {
   health: "/api/laso/health", version: "/api/laso/version",
@@ -39,22 +41,33 @@ function button(label, className, onClick, ariaLabel) {
 function detail(value, label = "Technical details") {
   const node = document.createElement("details");
   node.className = "technical-details";
+  const identity = value && typeof value === "object" && (value.id || value.run_id || value.worker_job_id);
+  node.dataset.disclosureKey = `${label}:${identity || JSON.stringify(value)}`;
+  node.open = state.openDetails.has(node.dataset.disclosureKey);
+  node.addEventListener("toggle", () => {
+    if (node.open) state.openDetails.add(node.dataset.disclosureKey);
+    else state.openDetails.delete(node.dataset.disclosureKey);
+  });
   node.append(element("summary", label));
   const pre = element("pre", JSON.stringify(value, null, 2), "json");
   node.append(pre);
   return node;
 }
 function stateBadge(value) {
-  const label = UI.humanize(value || "unknown");
+  const label = UI.stateCopy(value || "unknown");
   return element("span", label, `state-pill ${UI.stateTone(value)}`);
 }
 function list(name) { return UI.items(state.data[name]); }
 function routeId(value) { return encodeURIComponent(String(value)).replaceAll("%40", "@"); }
 function showNotice(message, isError = false) {
   const box = $("#notice");
-  box.textContent = message;
+  window.clearTimeout(state.noticeTimer);
+  box.replaceChildren();
+  if (message && isError) box.append(element("span", "That request could not be completed."), detail({ message }, "Technical details"));
+  else if (message) box.textContent = message;
   box.className = `notice${isError ? " error" : ""}${message ? "" : " hidden"}`;
   box.setAttribute("role", isError ? "alert" : "status");
+  if (message && !isError) state.noticeTimer = window.setTimeout(() => showNotice(""), 3200);
 }
 function errorFor(name) { return state.errors[name] || ""; }
 
@@ -96,17 +109,18 @@ async function refresh(options = {}) {
   });
   const online = !errorFor("health") && state.data.health?.status === "ok";
   $("#connection-dot").className = `dot ${online ? "good" : "bad"}`;
-  $("#connection-label").textContent = online
-    ? `LASO connected${state.data.version?.version ? ` · ${state.data.version.version}` : ""}`
-    : `Reconnecting · ${errorFor("health") || "unexpected health response"}`;
+  $("#connection-label").textContent = online ? "Connected" : "Reconnecting…";
+  $(".connection").title = online
+    ? `LASO${state.data.version?.version ? ` ${state.data.version.version}` : ""}`
+    : errorFor("health") || "LASO health is unavailable";
 
   if (state.activeRunId && online) {
     const id = routeId(state.activeRunId);
     const messages = await Promise.allSettled([
       api(`/api/laso/runs/${id}/messages`), api(`/api/laso/runs/${id}/events`)
     ]);
-    state.runMessages = messages[0].status === "fulfilled" ? UI.items(messages[0].value) : [];
-    state.runEvents = messages[1].status === "fulfilled" ? UI.items(messages[1].value) : [];
+    if (messages[0].status === "fulfilled") state.runMessages = UI.items(messages[0].value);
+    if (messages[1].status === "fulfilled") state.runEvents = UI.items(messages[1].value);
   }
   updateSidebar();
   const choices = list("pipelines").map(p => `${p.name || p.id}@${p.version || 1}`).join("|");
@@ -118,8 +132,8 @@ async function refresh(options = {}) {
   else {
     const welcomeCopy = $(".welcome-copy");
     if (welcomeCopy) welcomeCopy.textContent = errorFor("health")
-      ? "LASO is reconnecting. Your task will stay here until you submit it."
-      : "Choose a pipeline, describe the task, and LASO will run it.";
+      ? "LASO is unavailable right now. Your draft stays here while it reconnects."
+      : "Choose a pipeline and describe what you need.";
   }
   state.lastPipelineChoices = choices;
   state.lastPipelineError = pipelineError;
@@ -144,20 +158,28 @@ function pipelineLabel(run) {
 }
 function updateSidebar() {
   const runs = [...list("runs")].sort((a, b) => Date.parse(b.created_at || b.updated_at || "") - Date.parse(a.created_at || a.updated_at || ""));
-  const recent = $("#recent-runs"); recent.replaceChildren();
-  if (errorFor("runs") && !runs.length) {
-    recent.append(element("p", "Could not load recent work.", "sidebar-empty"));
-  } else if (!runs.length) {
-    recent.append(element("p", "Your runs will appear here.", "sidebar-empty"));
-  } else {
-    runs.slice(0, 12).forEach(run => {
-      const item = button("", `recent-item${state.activeRunId === run.id ? " selected" : ""}`, () => openRun(run.id));
-      item.title = titleForRun(run);
-      item.append(element("span", titleForRun(run), "recent-title"));
-      const meta = element("span", undefined, "recent-meta");
-      meta.append(element("span", UI.humanize(run.state || "unknown")), element("span", UI.relativeTime(run.created_at || run.updated_at)));
-      item.append(meta); recent.append(item);
-    });
+  const recent = $("#recent-runs");
+  const key = JSON.stringify({ recent: runs.slice(0, 12).map(run => [run.id, titleForRun(run), run.state, run.created_at, run.updated_at]),
+    errors: errorFor("runs"), pending: [list("approvals").filter(x => UI.pending(UI.stateOf(x))).length,
+      list("requests").filter(x => UI.pending(UI.stateOf(x))).length], active: state.activeRunId,
+    minute: Math.floor(Date.now() / 60000) });
+  if (state.sidebarKey !== key) {
+    recent.replaceChildren();
+    if (errorFor("runs") && !runs.length) {
+      recent.append(element("p", "Could not load recent work.", "sidebar-empty"));
+    } else if (!runs.length) {
+      recent.append(element("p", "Your runs will appear here.", "sidebar-empty"));
+    } else {
+      runs.slice(0, 12).forEach(run => {
+        const item = button("", `recent-item${state.activeRunId === run.id ? " selected" : ""}`, () => openRun(run.id));
+        item.title = titleForRun(run);
+        item.append(element("span", titleForRun(run), "recent-title"));
+        const meta = element("span", undefined, "recent-meta");
+        meta.append(element("span", UI.stateCopy(run.state)), element("span", UI.relativeTime(run.created_at || run.updated_at)));
+        item.append(meta); recent.append(item);
+      });
+    }
+    state.sidebarKey = key;
   }
   const pending = list("approvals").filter(x => UI.pending(UI.stateOf(x))).length + list("requests").filter(x => UI.pending(UI.stateOf(x))).length;
   $("#approval-count").textContent = pending ? String(pending) : "";
@@ -173,7 +195,9 @@ function updateSidebar() {
 function setView(view) {
   state.activeView = view;
   if (view === "new") state.activeRunId = "";
+  history.pushState({}, "", UI.routeHash(view, state.activeRunId));
   state.mobileOpen = false;
+  state.renderKey = "";
   updateSidebar();
   renderView();
   $("#main").focus({ preventScroll: true });
@@ -181,7 +205,9 @@ function setView(view) {
 function openRun(id) {
   state.activeRunId = String(id);
   state.activeView = "thread";
+  history.pushState({}, "", UI.routeHash("thread", state.activeRunId));
   state.mobileOpen = false;
+  state.renderKey = "";
   updateSidebar();
   renderView();
   refresh({ quiet: true });
@@ -211,9 +237,13 @@ function taskComposer() {
   const form = element("form", undefined, "composer");
   form.id = "task-composer";
   const top = element("div", undefined, "composer-top");
-  const pipelineLabel = element("label", "Run with"); pipelineLabel.htmlFor = "pipeline-select";
+  const pipelineLabel = element("label", "Pipeline"); pipelineLabel.htmlFor = "pipeline-select";
   const select = document.createElement("select"); select.id = "pipeline-select"; select.required = true;
   const pipelines = list("pipelines");
+  let submitButton;
+  const updateSubmitState = () => {
+    if (submitButton) submitButton.disabled = !select.value || (!state.draft.trim() && !state.customInput.trim());
+  };
   if (!pipelines.length) {
     const option = element("option", errorFor("pipelines") ? "Pipelines unavailable" : "No pipelines registered");
     option.value = ""; select.append(option); select.disabled = true;
@@ -225,36 +255,36 @@ function taskComposer() {
       optionNode.value = value; select.append(optionNode);
     });
     const remembered = pipelines.some(p => `${p.name || p.id}@${p.version || 1}` === state.selectedPipeline)
-      ? state.selectedPipeline : (pipelines.length === 1 ? `${pipelines[0].name || pipelines[0].id}@${pipelines[0].version || 1}` : "");
+      ? state.selectedPipeline : "";
     state.selectedPipeline = remembered;
     select.value = remembered;
   }
-  select.addEventListener("change", () => { state.selectedPipeline = select.value; });
+  select.addEventListener("change", () => { state.selectedPipeline = select.value; updateSubmitState(); });
   top.append(pipelineLabel, select);
-  const label = element("label", "Your task"); label.htmlFor = "task-input";
+  const label = element("label", "Message LASO"); label.htmlFor = "task-input";
   const input = document.createElement("textarea"); input.id = "task-input"; input.rows = 3;
-  input.placeholder = "Describe what you want LASO to do…";
+  input.placeholder = "Ask LASO to…";
   input.setAttribute("aria-describedby", "keyboard-hint"); input.value = state.draft;
-  input.addEventListener("input", () => { state.draft = input.value; });
+  input.addEventListener("input", () => { state.draft = input.value; updateSubmitState(); });
   input.addEventListener("keydown", event => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); form.requestSubmit(); }
   });
   const advanced = document.createElement("details"); advanced.className = "advanced-input";
-  advanced.append(element("summary", "Options · custom pipeline input"));
-  const help = element("p", "Use this when your selected pipeline expects fields other than a prompt. Enter the input object LASO should receive.", "helper-text");
+  advanced.append(element("summary", "Options"));
+  const help = element("p", "Use custom JSON when this pipeline expects fields other than a prompt.", "helper-text");
   const custom = document.createElement("textarea"); custom.id = "custom-input"; custom.rows = 4;
   custom.placeholder = '{\n  "field": "value"\n}'; custom.value = state.customInput;
   custom.setAttribute("aria-label", "Custom pipeline input JSON object");
-  custom.addEventListener("input", () => { state.customInput = custom.value; });
+  custom.addEventListener("input", () => { state.customInput = custom.value; updateSubmitState(); });
   advanced.append(help, custom);
-  const hint = element("span", "Enter to run · Shift+Enter for a new line", "composer-hint"); hint.id = "keyboard-hint";
+  const hint = element("span", "Enter to send · Shift+Enter for newline", "composer-hint"); hint.id = "keyboard-hint";
   const footer = element("div", undefined, "composer-footer");
   const hintWrap = element("div", undefined, "composer-help"); hintWrap.append(advanced, hint);
-  const submit = element("button", undefined, "run-button"); submit.type = "submit";
-  submit.disabled = !pipelines.length;
-  submit.append(element("span", pipelines.length ? "Run task" : "No pipeline available"), element("span", "↑", "send-icon"));
-  footer.append(hintWrap, submit);
-  form.append(top, label, input, advanced, footer);
+  submitButton = element("button", undefined, "run-button"); submitButton.type = "submit";
+  submitButton.disabled = !pipelines.length || !select.value || (!state.draft.trim() && !state.customInput.trim());
+  submitButton.append(element("span", pipelines.length ? "Send" : "No pipeline available"), element("span", "↑", "send-icon"));
+  footer.append(hintWrap, submitButton);
+  form.append(label, input, top, footer);
   form.addEventListener("submit", submitTask);
   return form;
 }
@@ -279,7 +309,8 @@ async function submitTask(event) {
     state.draft = ""; state.customInput = "";
     if (!result.id) throw new Error("LASO accepted the request but did not return a run identifier.");
     state.activeRunId = String(result.id); state.activeView = "thread";
-    showNotice("LASO accepted your task.");
+    history.pushState({}, "", UI.routeHash("thread", state.activeRunId));
+    state.renderKey = "";
     await refresh({ quiet: true });
     renderView(); updateSidebar();
   } catch (error) {
@@ -291,24 +322,11 @@ async function submitTask(event) {
 function renderNew(root) {
   const page = element("section", undefined, "welcome-page");
   const emblem = element("div", "L", "welcome-mark"); emblem.setAttribute("aria-hidden", "true");
-  const status = errorFor("health") ? "LASO is reconnecting. Your task will stay here until you submit it." : "Choose a pipeline, describe the task, and LASO will run it.";
-  page.append(emblem, element("p", "YOUR WORKSPACE", "eyebrow"), element("h1", "What would you like LASO to do?"), element("p", status, "welcome-copy"), taskComposer());
+  const status = errorFor("health") ? "LASO is unavailable right now. Your draft stays here while it reconnects." : "Choose a pipeline and describe what you need.";
+  page.append(emblem, element("h1", "What would you like to do?"), element("p", status, "welcome-copy"), taskComposer());
   const pipelines = list("pipelines");
   if (errorFor("pipelines")) page.append(sectionError("pipelines"));
   else if (!pipelines.length) page.append(emptyState("No pipelines are registered yet", "Register a pipeline with LASO, then come back here to start a run."));
-  const runs = [...list("runs")].sort((a, b) => Date.parse(b.created_at || "") - Date.parse(a.created_at || "")).slice(0, 3);
-  if (runs.length) {
-    const recent = element("section", undefined, "welcome-recent");
-    const heading = element("div", undefined, "mini-heading"); heading.append(element("h2", "Pick up recent work"), button("View all", "text-button", () => setView("history")));
-    recent.append(heading);
-    const cards = element("div", undefined, "recent-cards");
-    runs.forEach(run => {
-      const card = button("", "recent-card", () => openRun(run.id));
-      card.append(element("span", titleForRun(run), "recent-card-title"), stateBadge(run.state), element("span", `${pipelineLabel(run)} · ${UI.relativeTime(run.created_at || run.updated_at)}`, "recent-card-meta"));
-      cards.append(card);
-    });
-    recent.append(cards); page.append(recent);
-  }
   root.append(page);
 }
 
@@ -326,13 +344,7 @@ function messagePrompt(messages) {
   return "";
 }
 function readablePayload(payload) {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return "";
-  const chunks = [];
-  for (const key of ["summary", "text", "content", "answer", "greeting", "output", "result", "message"]) {
-    const value = payload[key];
-    if (typeof value === "string" && value.trim()) chunks.push(value.trim());
-  }
-  return chunks.join("\n\n");
+  return UI.outputText(payload);
 }
 function isActive(value) { return !UI.terminal(value); }
 
@@ -361,10 +373,17 @@ function workerJobCard(job, compact = false) {
 }
 
 function renderActivity(run) {
-  const section = element("section", undefined, "thread-section");
-  section.append(element("h2", "Activity", "thread-section-title"));
+  const section = document.createElement("details");
+  section.className = "activity-disclosure";
+  section.dataset.disclosureKey = `activity:${run.id}`;
+  section.open = state.openDetails.has(section.dataset.disclosureKey);
+  section.addEventListener("toggle", () => {
+    if (section.open) state.openDetails.add(section.dataset.disclosureKey);
+    else state.openDetails.delete(section.dataset.disclosureKey);
+  });
+  section.append(element("summary", `View activity · ${UI.activitySummary(state.runEvents, run)}`));
   if (!state.runEvents.length) {
-    section.append(emptyState("No activity events returned", errorFor("health") ? "Activity will update when LASO reconnects." : "LASO has not exposed any run events yet."));
+    section.append(element("p", "No activity events are available for this run.", "muted small"));
     return section;
   }
   const timeline = element("ol", undefined, "timeline");
@@ -381,29 +400,54 @@ function renderActivity(run) {
   section.append(timeline); return section;
 }
 function renderMessages() {
-  const messages = state.runMessages;
+  const messages = state.runMessages.filter(message => {
+    const payload = message.payload;
+    if (String(message.node_id || "").toLowerCase() === "input") return false;
+    if (payload && typeof payload === "object" && !Array.isArray(payload)
+      && Object.keys(payload).every(key => ["prompt", "task", "instruction"].includes(key))) return false;
+    if (payload && typeof payload === "object" && !Array.isArray(payload)
+      && Object.keys(payload).every(key => ["input", "id", "run_id", "pipeline_id", "node_id", "metadata", "provenance"].includes(key.toLowerCase()))) return false;
+    return Boolean(readablePayload(payload)) || Boolean(payload && typeof payload === "object" && Object.keys(payload).length)
+      || /error|failure/i.test(message.type || "");
+  });
   if (!messages.length) return null;
   const section = element("section", undefined, "thread-section");
-  section.append(element("h2", "Messages and results", "thread-section-title"));
-  messages.forEach(message => {
+  const seen = new Set();
+  const visible = messages.filter(message => {
+    const content = readablePayload(message.payload);
+    const key = `${message.type || ""}:${content || JSON.stringify(message.payload)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  visible.forEach(message => {
     const payload = message.payload;
-    const card = element("article", undefined, "message-card");
+    const content = readablePayload(payload);
+    const label = UI.messageLabel(message.type, payload);
+    const card = element("article", undefined, `assistant-message${label === "Error" ? " assistant-error" : ""}`);
     const heading = element("div", undefined, "message-heading");
-    heading.append(element("span", UI.humanize(message.type || "LASO message"), "message-kind"));
+    heading.append(element("span", label, "message-kind"));
     const date = message.timestamp;
     if (date) { const time = element("time", UI.relativeTime(date)); time.dateTime = date; time.title = date; heading.append(time); }
     card.append(heading);
-    const summary = readablePayload(payload);
-    if (summary) card.append(element("div", summary, "message-content"));
-    else card.append(element("p", "LASO returned structured data for this step.", "message-muted"));
-    card.append(detail(message, "Inspect message data")); section.append(card);
+    if (content) {
+      const isJson = /^[\[{]/.test(content) && (() => { try { JSON.parse(content); return true; } catch { return false; } })();
+      card.append(element(isJson ? "pre" : "div", content, `message-content${isJson ? " message-code" : ""}`));
+    } else {
+      card.append(element("p", "LASO returned structured output.", "message-muted"));
+      card.append(detail(message, "View structured output"));
+    }
+    card.append(detail(message, "Technical details")); section.append(card);
   });
+  if (messages.length > visible.length || messages.length > 1) {
+    section.append(detail(messages, `All LASO messages · ${messages.length}`));
+  }
   return section;
 }
 function approvalCard(record, kind) {
   const card = element("article", undefined, "approval-card");
   const copy = element("div", undefined, "approval-copy");
-  copy.append(element("span", kind === "approval" ? "LASO needs a decision" : `Worker ${record.type || record.request_type || "request"}`, "eyebrow"));
+  copy.append(element("span", kind === "approval" ? "LASO needs your approval" : `LASO needs your ${String(record.type || record.request_type || "input").toLowerCase()}`, "eyebrow"));
   copy.append(element("h3", record.title || record.summary || (kind === "approval" ? "Review this operation" : "Review worker request")));
   const payload = record.payload || record.context || record.details;
   const preview = readablePayload(payload);
@@ -450,25 +494,24 @@ function renderThread(root) {
     return;
   }
   const page = element("section", undefined, "thread-page");
-  const top = sectionTitle(titleForRun(run), `${pipelineLabel(run)} · Started ${UI.relativeTime(run.created_at || run.updated_at)}`,
-    button("New task", "button secondary", () => setView("new")));
+  const top = element("div", undefined, "thread-topline");
+  const title = element("div");
+  title.append(element("h1", pipelineLabel(run)), element("p", `Started ${UI.relativeTime(run.created_at || run.updated_at)}`, "thread-started"));
+  const topActions = element("div", undefined, "thread-top-actions");
+  topActions.append(stateBadge(run.state), button("New task", "button secondary", () => setView("new")));
+  top.append(title, topActions);
   page.append(top);
-  const card = element("section", undefined, "run-summary");
-  const statusLine = element("div", undefined, "run-summary-line");
-  statusLine.append(stateBadge(run.state));
-  const updated = run.updated_at || run.created_at;
-  if (updated) { const time = element("time", `Updated ${UI.relativeTime(updated)}`); time.dateTime = updated; time.title = updated; statusLine.append(time); }
-  card.append(statusLine);
-  const stateCopy = {
-    queued: "LASO has queued this run.", starting: "LASO is starting this run.", running: "LASO is working on this run.",
-    waiting: "This run is waiting for a LASO-side event or decision.", completed: "LASO completed this run.",
-    waitingforapproval: "LASO is waiting for your approval.", awaitingapproval: "LASO is waiting for your approval.",
-    waitingforinput: "LASO is waiting for input.", awaitinginput: "LASO is waiting for input.",
-    failed: "LASO reported that this run failed.", cancelled: "This run was cancelled.", canceled: "This run was cancelled."
-  };
-  const statusValue = String(run.state || "unknown").toLowerCase();
-  card.append(element("p", stateCopy[statusValue.replaceAll("_", "")] || `Current state: ${UI.humanize(run.state || "unknown")}.`, "run-state-copy"));
-  if (run.error) card.append(element("div", run.error, "run-error"));
+  if (errorFor("health")) {
+    const offline = element("section", undefined, "connection-warning");
+    offline.append(element("strong", "LASO is unavailable"), element("p", "Unable to reach LASO right now. This workspace will keep trying."),
+      button("Retry now", "button secondary", () => refresh({ quiet: true })));
+    offline.append(detail({ message: errorFor("health") }, "Technical details")); page.append(offline);
+  }
+  if (run.error) {
+    const error = element("section", undefined, "run-error");
+    error.append(element("strong", "This run did not complete"), element("p", text(run.error)), detail(run, "Technical details"));
+    page.append(error);
+  }
   const requestText = messagePrompt(state.runMessages) || UI.promptOf(run) || (state.submittedPrompt && state.activeRunId === run.id ? state.submittedPrompt : "");
   if (requestText) {
     const user = element("article", undefined, "user-message");
@@ -477,25 +520,34 @@ function renderThread(root) {
   } else {
     const supplied = run.message?.payload ?? run.message;
     const submission = element("article", undefined, "user-message");
-    submission.append(element("span", "PIPELINE INPUT", "eyebrow"), element("p", "This run’s input is available in the technical details below."), detail(supplied, "Submitted input"));
+    submission.append(element("span", "YOUR TASK", "eyebrow"), element("p", "The submitted input is available in technical details."), detail(supplied, "Submitted input"));
     page.append(submission);
   }
-  card.append(detail(run)); page.append(card);
   const decisions = relatedDecisions(run);
   if (decisions.length) {
     const pending = element("section", undefined, "thread-section");
-    pending.append(element("h2", "LASO needs your input", "thread-section-title"));
+    pending.append(element("h2", "A decision is needed to continue", "thread-section-title"));
     decisions.forEach(decision => pending.append(decision)); page.append(pending);
+  }
+  if (isActive(run.state) && !decisions.length) {
+    const activity = element("p", UI.stateCopy(run.state), "assistant-status");
+    page.append(activity);
   }
   const messages = renderMessages(); if (messages) page.append(messages);
   page.append(renderActivity(run));
   const jobs = list("jobs").filter(job => String(job.run_id || job.pipeline_run_id || "") === String(run.id));
   if (jobs.length) {
     const workerSection = element("section", undefined, "thread-section");
-    workerSection.append(element("h2", "Worker activity", "thread-section-title"));
-    jobs.forEach(job => workerSection.append(workerJobCard(job, true)));
+    const disclosure = document.createElement("details"); disclosure.className = "worker-disclosure";
+    disclosure.dataset.disclosureKey = `workers:${run.id}`;
+    disclosure.open = state.openDetails.has(disclosure.dataset.disclosureKey);
+    disclosure.addEventListener("toggle", () => disclosure.open ? state.openDetails.add(disclosure.dataset.disclosureKey) : state.openDetails.delete(disclosure.dataset.disclosureKey));
+    disclosure.append(element("summary", `Worker activity · ${jobs.length} job${jobs.length === 1 ? "" : "s"}`));
+    jobs.forEach(job => disclosure.append(workerJobCard(job, true)));
+    workerSection.append(disclosure);
     page.append(workerSection);
   }
+  page.append(detail(run, "Technical details"));
   if (isActive(run.state)) {
     page.append(button("Cancel run", "button secondary danger cancel-run", () => act(`/api/laso/runs/${routeId(run.id)}/cancel`, {})));
   }
@@ -629,8 +681,29 @@ function renderSystem(root) {
 }
 
 function renderView() {
+  const activeRun = findActiveRun();
+  const runSnapshot = activeRun && [activeRun.id, activeRun.state, activeRun.created_at, activeRun.updated_at,
+    activeRun.error, activeRun.pipeline_id, activeRun.pipeline_version, activeRun.message];
+  const visibleJobs = list("jobs").filter(job => String(job.run_id || job.pipeline_run_id || "") === state.activeRunId);
+  const snapshot = {
+    thread: { run: runSnapshot, messages: state.runMessages, events: state.runEvents,
+      approvals: list("approvals").filter(item => String(item.run_id || "") === state.activeRunId),
+      requests: list("requests").filter(item => String(item.run_id || "") === state.activeRunId
+        || (activeRun?.worker_job_id && String(item.worker_job_id || "") === String(activeRun.worker_job_id))),
+      jobs: visibleJobs.map(job => [job.id, UI.stateOf(job), job.usage]),
+      errors: [errorFor("health"), errorFor("approvals"), errorFor("requests")] },
+    new: { pipelines: state.data.pipelines, error: errorFor("pipelines"), unavailable: Boolean(errorFor("health")) },
+    history: { runs: state.data.runs, jobs: state.data.jobs, errors: [errorFor("runs"), errorFor("jobs")] },
+    workers: { workers: state.data.workers, runs: state.data.runs, jobs: state.data.jobs, error: errorFor("workers") },
+    approvals: { approvals: state.data.approvals, requests: state.data.requests, errors: [errorFor("approvals"), errorFor("requests")] },
+    schedules: { schedules: state.data.schedules, error: errorFor("schedules") },
+    system: { health: state.data.health, version: state.data.version, counts: [list("workers").length, list("pipelines").length,
+      list("runs").length, list("approvals").length, list("requests").length], errors: state.errors }
+  };
+  const key = JSON.stringify({ view: state.activeView, run: state.activeRunId, snapshot: snapshot[state.activeView] });
+  if (key === state.renderKey) return;
+  state.renderKey = key;
   const root = $("#content"); root.replaceChildren();
-  showNotice($("#notice").textContent || "", $("#notice").classList.contains("error"));
   switch (state.activeView) {
     case "thread": renderThread(root); break;
     case "history": renderHistory(root); break;
@@ -663,6 +736,16 @@ $("#sidebar-toggle").addEventListener("click", () => {
 $("#drawer-backdrop").addEventListener("click", () => { state.mobileOpen = false; updateSidebar(); });
 $("#refresh").addEventListener("click", () => refresh());
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh({ quiet: true }); });
+window.addEventListener("popstate", () => {
+  const route = UI.route(window.location.hash);
+  state.activeView = route.view;
+  state.activeRunId = route.runId;
+  state.mobileOpen = false;
+  state.renderKey = "";
+  updateSidebar();
+  renderView();
+  refresh({ quiet: true });
+});
 window.addEventListener("resize", updateSidebar);
 document.addEventListener("keydown", event => {
   if (event.key === "Escape" && state.mobileOpen) {
