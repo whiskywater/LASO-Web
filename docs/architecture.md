@@ -16,7 +16,7 @@ The server-side hop prevents browser JavaScript from learning a configured upstr
 
 ## Interface boundary
 
-The current UI consumes the existing health/version, pipelines, runs, approvals, workers, worker jobs, worker requests, and schedules API routes. It does not invent worker assignment, worker health, artifact browsing, or schedule-edit routes. Worker choice remains part of the registered pipeline. LASO owns persistence, policy decisions, orchestration, and API validation; the browser merely renders and requests actions through those interfaces.
+The current UI consumes the existing health/version, pipelines, runs, run messages/events, approvals, workers, worker jobs, worker requests, and schedules API routes. It refreshes those records periodically; LASO-Web does not claim SSE/WebSocket streaming or fabricate progress. It does not invent worker assignment, worker health, artifact browsing, or schedule-edit routes. Worker choice remains part of the registered pipeline. LASO owns persistence, policy decisions, orchestration, and API validation; the browser merely renders and requests actions through those interfaces.
 
 ## Request safety
 

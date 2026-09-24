@@ -10,16 +10,26 @@ Browser → LASO-Web (static UI + bounded same-origin API adapter) → LASO HTTP
 
 The adapter keeps LASO credentials out of browser JavaScript and avoids needing permissive CORS support in LASO. The application uses Python's standard library only; there is no npm build or runtime database.
 
-## Current API coverage
+The screenshots show a safe deterministic Hello-pipeline run:
+
+![Desktop task workspace](docs/images/workspace.png)
+
+![Run thread with LASO-returned messages and events](docs/images/run-thread.png)
+
+![Mobile task workspace](docs/images/workspace-mobile.png)
+
+## Workspace experience and API coverage
+
+LASO-Web opens on a task workspace rather than a metrics dashboard. Choose a registered pipeline, describe the task, and follow that run from its returned state, event history, and messages. Recent runs are shown by task/pipeline label; identifiers and full API objects remain available in expandable technical details. The layout works as a collapsible desktop sidebar and a mobile navigation drawer.
 
 Based on LASO's published `/api/v1` interface (see its [API reference](https://github.com/Registered-Agent-Attorney/LASO/blob/main/docs/access.md)), the UI currently provides:
 
-* connectivity and version indication from `/health` and `/version`;
+* recurring health/version and list polling, plus run-specific `/events` and `/messages` polling;
+* a task-first composer for an explicitly selected registered pipeline, with prompt input and an advanced custom JSON object option;
+* recent work navigation, a worker-job history, and run workspaces with real LASO state, event history, returned messages/results, errors, and cancellation where supported;
 * worker inventory and capabilities from `/workers`;
-* registered pipeline listing and run submission;
-* run and worker-job status/results, including cancellation;
-* durable pipeline approvals and worker-originated approval/permission/question requests;
-* read-only schedule listing.
+* contextual pending approvals/worker requests on their associated run, plus a full decision queue;
+* read-only schedule listing and a secondary system-status view.
 
 LASO assigns workers through pipeline definitions; it does not expose a separate operator API for changing worker assignments, so this UI does not invent one. Schedule listing is supported, but schedule editing is not included in this first release. Artifact listing/browsing, live event streams, worker-specific health probes, and configuration editing are also omitted because the current HTTP interface does not provide those GUI operations. LASO exposes no CORS headers; same-origin proxying is used instead.
 
@@ -57,7 +67,11 @@ The LASO URL is deployment configuration, not browser input. The server forwards
 
 ## Connecting and using the UI
 
-Open the web address and check the connection indicator. The dashboard reports only values returned by LASO; it does not synthesize worker health or usage. In **Runs**, select an already registered pipeline and enter an input JSON object. The pipeline itself defines its worker/capability bindings. The **Approvals & requests** view submits decisions to LASO's durable approval/request endpoints; LASO remains authoritative for policy. A question request's answer is sent as a structured payload.
+Open LASO-Web and choose one of the registered pipelines. Describe the task in ordinary text; by default it is sent as the pipeline input field `prompt`. Pipelines may expect another input shape, so **Options · custom pipeline input** lets you enter the JSON object required by that pipeline. LASO-Web does not choose a pipeline automatically because LASO does not expose automatic pipeline selection.
+
+After LASO accepts a run, its workspace refreshes automatically every five seconds and shows only states, events, messages, and data returned by LASO. There is no fabricated progress percentage or generated worker narration. If the pipeline requires another input schema, inspect its definition in LASO and use the advanced input option. The **Approvals** view submits decisions to LASO's durable approval/request endpoints; when a pending record has a matching run ID, it is also shown in that run. LASO remains authoritative for policy.
+
+**Workers**, **Approvals**, **Schedules**, and **System** remain available from the secondary navigation. LASO-Web only exposes API operations that LASO actually supports; worker assignment, pipeline authoring, schedule editing, and artifact browsing are not invented in the UI.
 
 LASO's current local-development identity is unauthenticated. Therefore LASO-Web should be treated as an administrative console, not an internet-facing application. Keep both services on loopback/private network by default. For remote access, use a TLS reverse proxy, set a strong `LASO_WEB_PASSWORD`, and configure LASO's own supported identity/authorization before exposing sensitive operations. Do not bind LASO's unauthenticated development API publicly.
 
@@ -73,6 +87,7 @@ sudo install -d -o root -g root -m 0750 /etc/laso-web
 sudo install -m 0644 server.py run.sh /opt/laso-web/
 sudo install -m 0644 -D static/index.html /opt/laso-web/static/index.html
 sudo install -m 0644 -D static/app.js /opt/laso-web/static/app.js
+sudo install -m 0644 -D static/model.js /opt/laso-web/static/model.js
 sudo install -m 0644 -D static/style.css /opt/laso-web/static/style.css
 sudo install -m 0644 deploy/systemd/laso-web.service /etc/systemd/system/laso-web.service
 ```
@@ -100,8 +115,13 @@ Upstream requests time out after 8 seconds. Browser requests have a 10-second de
 
 ## Development and tests
 
+Node.js 22 is used only to run the dependency-free UI model tests; it is not required to run or deploy LASO-Web.
+
 ```sh
 python3 -m unittest discover -s tests -v
+node --test tests/test_ui_model.cjs
+node --check static/model.js
+node --check static/app.js
 ```
 
 An optional real-server smoke test uses a temporary SQLite directory, registers the deterministic Hello pipeline, and creates/polls one run through LASO-Web's HTTP adapter:

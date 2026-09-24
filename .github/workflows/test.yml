@@ -23,3 +23,11 @@ jobs:
         run: |
           python -m py_compile server.py tests/*.py
           python -m unittest discover -s tests -v
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate browser UI logic
+        run: |
+          node --check static/model.js
+          node --check static/app.js
+          node --test tests/test_ui_model.cjs

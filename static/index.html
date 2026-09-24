@@ -3,34 +3,47 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#11181d">
   <title>LASO-Web</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="#overview" aria-label="LASO-Web home"><span class="brand-mark">L</span><span>LASO<span class="muted"> / WEB</span></span></a>
-    <div class="connection"><span id="connection-dot" class="dot unknown"></span><span id="connection-label">Checking LASO…</span><button id="refresh" class="icon-button" title="Refresh data" aria-label="Refresh data">↻</button></div>
+    <button id="sidebar-toggle" class="icon-button sidebar-toggle" type="button" aria-label="Toggle navigation" aria-expanded="true">☰</button>
+    <a id="brand-home" class="brand" href="#new" aria-label="LASO-Web new task">
+      <span class="brand-mark" aria-hidden="true">L</span>
+      <span class="brand-name">LASO<span class="brand-suffix"> / WEB</span></span>
+    </a>
+    <div class="topbar-right">
+      <div class="connection" role="status" aria-live="polite"><span id="connection-dot" class="dot unknown"></span><span id="connection-label">Connecting to LASO…</span></div>
+      <button id="refresh" class="icon-button refresh-button" type="button" title="Refresh now" aria-label="Refresh now">↻</button>
+    </div>
   </header>
-  <div class="layout">
-    <nav class="sidebar" aria-label="Main navigation">
-      <button class="nav-item active" data-view="overview">Overview</button>
-      <button class="nav-item" data-view="workers">Workers</button>
-      <button class="nav-item" data-view="runs">Runs</button>
-      <button class="nav-item" data-view="approvals">Approvals <span id="approval-count" class="nav-count"></span></button>
-      <button class="nav-item" data-view="schedules">Schedules</button>
-      <div class="sidebar-note">Operator console<br><span>Connected through the LASO API</span></div>
-    </nav>
-    <main id="main" tabindex="-1">
-      <section id="notice" class="notice hidden" role="status"></section>
-      <section id="view-overview" class="view"></section>
-      <section id="view-workers" class="view hidden"></section>
-      <section id="view-runs" class="view hidden"></section>
-      <section id="view-approvals" class="view hidden"></section>
-      <section id="view-schedules" class="view hidden"></section>
-      <footer>LASO-Web is an optional client. Orchestration, policy, and durable state remain in LASO.</footer>
+  <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+  <div class="app-shell">
+    <aside id="sidebar" class="sidebar" aria-label="Workspace navigation">
+      <button id="new-task" class="new-task-button" type="button"><span aria-hidden="true">＋</span> New task</button>
+      <div class="sidebar-section">
+        <div class="section-label">RECENT WORK</div>
+        <div id="recent-runs" class="recent-runs"><p class="sidebar-empty">Your runs will appear here.</p></div>
+      </div>
+      <nav class="primary-nav" aria-label="LASO sections">
+        <button class="nav-item" type="button" data-view="history"><span class="nav-icon" aria-hidden="true">◷</span><span class="nav-label">History</span></button>
+        <button class="nav-item" type="button" data-view="workers"><span class="nav-icon" aria-hidden="true">◈</span><span class="nav-label">Workers</span></button>
+        <button class="nav-item" type="button" data-view="approvals"><span class="nav-icon" aria-hidden="true">◇</span><span class="nav-label">Approvals</span><span id="approval-count" class="nav-count"></span></button>
+        <button class="nav-item" type="button" data-view="schedules"><span class="nav-icon" aria-hidden="true">◷</span><span class="nav-label">Schedules</span></button>
+        <button class="nav-item" type="button" data-view="system"><span class="nav-icon" aria-hidden="true">⌁</span><span class="nav-label">System</span></button>
+      </nav>
+      <div class="sidebar-footer"><span class="mini-mark">L</span><span>LASO-Web <span class="muted">· connected client</span></span></div>
+    </aside>
+    <main id="main" class="main" tabindex="-1">
+      <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
+      <div id="content" class="content"></div>
+      <footer>LASO-Web is a client. LASO remains responsible for orchestration, policy, and durable state.</footer>
     </main>
   </div>
+  <script src="/model.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>

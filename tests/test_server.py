@@ -171,7 +171,15 @@ class WebTests(unittest.TestCase):
             page = response.read().decode()
             self.assertEqual(response.status, 200)
             self.assertIn("LASO-Web", page)
+            self.assertIn('id="content"', page)
+            self.assertIn('data-view="history"', page)
+            self.assertIn('src="/model.js"', page)
             self.assertIn("default-src 'self'", response.getheader("Content-Security-Policy"))
+
+            connection.request("GET", "/model.js", headers={"Authorization": auth})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertIn("promptOf", response.read().decode())
 
             connection.request("GET", "/", headers={"Authorization": auth, "Host": "attacker.invalid"})
             response = connection.getresponse()
