@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>LASO-Web</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#overview" aria-label="LASO-Web home"><span class="brand-mark">L</span><span>LASO<span class="muted"> / WEB</span></span></a>
+    <div class="connection"><span id="connection-dot" class="dot unknown"></span><span id="connection-label">Checking LASO…</span><button id="refresh" class="icon-button" title="Refresh data" aria-label="Refresh data">↻</button></div>
+  </header>
+  <div class="layout">
+    <nav class="sidebar" aria-label="Main navigation">
+      <button class="nav-item active" data-view="overview">Overview</button>
+      <button class="nav-item" data-view="workers">Workers</button>
+      <button class="nav-item" data-view="runs">Runs</button>
+      <button class="nav-item" data-view="approvals">Approvals <span id="approval-count" class="nav-count"></span></button>
+      <button class="nav-item" data-view="schedules">Schedules</button>
+      <div class="sidebar-note">Operator console<br><span>Connected through the LASO API</span></div>
+    </nav>
+    <main id="main" tabindex="-1">
+      <section id="notice" class="notice hidden" role="status"></section>
+      <section id="view-overview" class="view"></section>
+      <section id="view-workers" class="view hidden"></section>
+      <section id="view-runs" class="view hidden"></section>
+      <section id="view-approvals" class="view hidden"></section>
+      <section id="view-schedules" class="view hidden"></section>
+      <footer>LASO-Web is an optional client. Orchestration, policy, and durable state remain in LASO.</footer>
+    </main>
+  </div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+[Unit]
+Description=LASO-Web operator interface
+After=network.target
+
+[Service]
+Type=simple
+User=laso-web
+Group=laso-web
+WorkingDirectory=/opt/laso-web
+EnvironmentFile=-/etc/laso-web/laso-web.env
+ExecStart=/usr/bin/python3 /opt/laso-web/server.py
+Restart=on-failure
+RestartSec=3s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+TasksMax=64
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ReadOnlyPaths=/opt/laso-web
+
+[Install]
+WantedBy=multi-user.target
