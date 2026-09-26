@@ -8,6 +8,17 @@ test("collection normalization accepts LASO list and paginated shapes", () => {
   assert.deepEqual(UI.items({ unexpected: true }), []);
 });
 
+test("capability presentation is derived only from backend capability names", () => {
+  const principal = { capabilities: ["runs.create", "conversations.create", "users.change_role", "<script>", 7] };
+  assert.equal(UI.can(principal, "runs.create"), true);
+  assert.equal(UI.can(principal, ["conversations.read_own", "conversations.create"]), true);
+  assert.equal(UI.can(principal, "users.disable"), false);
+  assert.equal(UI.presentationRole(principal), "Admin");
+  assert.equal(UI.presentationRole({ capabilities: ["runs.create"] }), "Standard");
+  assert.equal(UI.presentationRole({ role: "Admin" }), "Unknown");
+  assert.deepEqual(UI.normalizeCapabilities({ capabilities: ["runs.create", "<script>", 2] }), ["runs.create"]);
+});
+
 test("run labels prefer real prompt input and avoid making an ID the title", () => {
   const run = { id: "opaque-id", pipeline_id: "hello", pipeline_version: 1,
     message: { payload: { input: { prompt: "  Inspect the safe fixture  " } } } };

@@ -21,6 +21,14 @@ class FakeLasoHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         self.__class__.requests.append((self.command, self.path, self.headers.get("Authorization")))
+        if self.path in {"/api/v1/capabilities", "/api/v1/me"}:
+            body = json.dumps({"error": "not found"}).encode()
+            self.send_response(404)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.mode == "redirect":
             self.send_response(302)
             self.send_header("Location", "http://127.0.0.1:1/should-not-follow")
@@ -119,8 +127,8 @@ class WebTests(unittest.TestCase):
     def test_route_allowlist_blocks_arbitrary_proxying_and_invalid_queries(self):
         self.assertEqual(server.validate_upstream_path("GET", "/api/v1/health"), "/api/v1/health")
         self.assertEqual(server.validate_upstream_path("POST", "/api/v1/pipelines/hello@1/runs"), "/api/v1/pipelines/hello@1/runs")
+        self.assertEqual(server.validate_upstream_path("GET", "/api/v1/conversations"), "/api/v1/conversations")
         for method, path in (("GET", "http://example.invalid/"), ("GET", "/api/v1/artifacts/x"),
-                             ("GET", "/api/v1/conversations"),
                              ("POST", "/api/v1/workers/worker/start"), ("GET", "/api/v1/runs?next=http://example.invalid"),
                              ("POST", "/api/v1/approvals/a/approve?limit=1&offset=0")):
             with self.subTest(path=path), self.assertRaises(server.WebError):
@@ -210,6 +218,37 @@ class WebTests(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertEqual(json.loads(response.read())["status"], "ok")
 
+            connection.request("GET", "/api/features", headers={"Authorization": auth})
+            response = connection.getresponse()
+            discovery = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+            self.assertFalse(discovery["conversations_available"])
+            self.assertEqual(discovery["discovery"], "unsupported")
+
+            connection.request("POST", "/api/conversations", json.dumps({
+                "title": "Forged", "capabilities": ["conversations.create", "users.change_role"]
+            }), {"Authorization": auth, "Content-Type": "application/json"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 501)
+            response.read()
+
+            connection.request("POST", "/api/features", json.dumps({
+                "capabilities": ["users.change_role"]
+            }), {"Authorization": auth, "Content-Type": "application/json"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 405)
+            response.read()
+
+            connection.request("GET", "/api/admin/users", headers={"Authorization": auth})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 404)
+            response.read()
+
+            connection.request("GET", "/api/laso/health", headers={"Authorization": auth})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            response.read()
+
             body = json.dumps({"input": {"value": 9}})
             connection.request("POST", "/api/laso/pipelines/example/runs", body,
                                {"Authorization": auth, "Content-Type": "application/json",
@@ -235,6 +274,16 @@ class WebTests(unittest.TestCase):
             response = connection.getresponse()
             self.assertEqual(response.status, 403)
             response.read()
+
+            for method, route in (("PATCH", "/api/conversations/conv-1"),
+                                  ("DELETE", "/api/conversations/conv-1")):
+                connection.request(method, route, "{}" if method == "PATCH" else None, {
+                    "Authorization": auth, "Content-Type": "application/json",
+                    "Origin": "http://evil.invalid"
+                })
+                response = connection.getresponse()
+                self.assertEqual(response.status, 403)
+                response.read()
 
             connection.request("POST", "/api/laso/workers/anything", body,
                                {"Authorization": auth, "Content-Type": "application/json"})

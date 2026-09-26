@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* Prepare a server-side conversation service and capability discovery path; LASO remains authoritative for principal policy and conversation state, and unsupported conversation APIs stay unavailable.
+* Define typed conversation/context/settings transport shapes and document the backend API, ordering, idempotency, membership, and run-context snapshot handoff.
 * Refine run threads to foreground LASO's actual readable output, with lifecycle activity, duplicate/raw message data, and technical metadata progressively disclosed.
 * Keep polling updates from replacing unchanged thread content; preserve focused disclosures and add shareable/history-aware run routes that restore after refresh.
 * Simplify the task composer, remove duplicated recent-run cards, improve human-readable states and transient confirmations, and prevent horizontal overflow during responsive viewport changes.

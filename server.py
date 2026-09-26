@@ -28,6 +28,13 @@ ITEM_PATH = re.compile(
     rf"/api/v1/(pipelines|runs|approvals|schedules|workers|worker-jobs|worker-requests)/({ID})"
     rf"(?:/(runs|cancel|resume|events|attempts|messages|approve|reject|enable|disable|respond|answer|deny))?\Z"
 )
+CONVERSATION_PATH = re.compile(
+    rf"/api/v1/conversations(?:/({ID})(?:/(messages|turns|members|context)(?:/({ID}))?)?)?\Z"
+)
+CONVERSATION_QUERY = re.compile(
+    r"(?:limit=[1-9][0-9]{0,2}&offset=[0-9]{1,9}|offset=[0-9]{1,9}&limit=[1-9][0-9]{0,2}|"
+    r"after=[0-9]{1,18}&limit=[1-9][0-9]{0,2}|limit=[1-9][0-9]{0,2}&after=[0-9]{1,18})\Z"
+)
 
 
 class WebError(Exception):
@@ -126,16 +133,37 @@ def validate_upstream_path(method: str, raw_path: str) -> str:
     if len(raw_path) > 512 or not raw_path.startswith("/api/v1/") or "#" in raw_path:
         raise WebError(400, "Invalid LASO API route")
     path, separator, query = raw_path.partition("?")
-    if separator and (path not in {"/api/v1/pipelines", "/api/v1/runs", "/api/v1/approvals",
-                                    "/api/v1/schedules", "/api/v1/workers", "/api/v1/worker-jobs",
-                                    "/api/v1/worker-requests"} or not PAGINATION.fullmatch(query)):
-        raise WebError(400, "Invalid LASO API query")
+    if separator:
+        conversation_query = CONVERSATION_PATH.fullmatch(path)
+        if conversation_query:
+            _, child, item_id = conversation_query.groups()
+            valid = path == "/api/v1/conversations" and PAGINATION.fullmatch(query)
+            valid = valid or child == "messages" and item_id is None and CONVERSATION_QUERY.fullmatch(query)
+        else:
+            paginated = path in {"/api/v1/pipelines", "/api/v1/runs", "/api/v1/approvals",
+                                 "/api/v1/schedules", "/api/v1/workers", "/api/v1/worker-jobs",
+                                 "/api/v1/worker-requests"}
+            valid = paginated and PAGINATION.fullmatch(query)
+        if not valid:
+            raise WebError(400, "Invalid LASO API query")
     if method == "GET" and path in {
         "/api/v1/health", "/api/v1/version", "/api/v1/pipelines", "/api/v1/runs",
         "/api/v1/approvals", "/api/v1/schedules", "/api/v1/workers", "/api/v1/worker-jobs",
-        "/api/v1/worker-requests",
+        "/api/v1/worker-requests", "/api/v1/me", "/api/v1/capabilities",
     }:
         return raw_path
+    conversation_match = CONVERSATION_PATH.fullmatch(path)
+    if conversation_match:
+        conversation_id, child, item_id = conversation_match.groups()
+        if method == "GET" and (conversation_id is None or child is None
+                                 or child == "messages" or child in {"members", "context"} and item_id is None):
+            return raw_path
+        if method == "POST" and (conversation_id is None and child is None or child in {"turns", "members"} and item_id is None):
+            return raw_path
+        if method == "PATCH" and conversation_id is not None and child is None:
+            return raw_path
+        if method == "DELETE" and conversation_id is not None and (child is None or child == "members" and item_id is not None):
+            return raw_path
     match = ITEM_PATH.fullmatch(path)
     if match:
         collection, _item_id, action = match.groups()
@@ -227,6 +255,27 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, status: int, value: object) -> None:
         self._send(status, json.dumps(value, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
 
+    def _conversation_service(self):
+        from conversation_service import ConversationService
+
+        return ConversationService(lambda method, path, body: call_laso(self.server.config, method, path, body))
+
+    def _handle_conversation_route(self, method: str, body: dict | None = None) -> bool:
+        from conversation_service import conversation_route
+
+        parsed = urlsplit(self.path)
+        if parsed.path != "/api/features" and not parsed.path.startswith("/api/conversations"):
+            return False
+        try:
+            result = conversation_route(method, parsed.path, parsed.query, body, self._conversation_service())
+            if result is None:
+                return False
+            status, value = result
+            self._json(status, value)
+        except WebError as exc:
+            self._json(exc.status, {"error": exc.message, "detail": exc.detail})
+        return True
+
     def _authorized(self) -> bool:
         if self._auth_ok():
             return True
@@ -258,6 +307,8 @@ class Handler(BaseHTTPRequestHandler):
             name = self.path[1:]
             kind = "text/javascript; charset=utf-8" if name.endswith(".js") else "text/css; charset=utf-8"
             self._send(200, (ROOT / "static" / name).read_bytes(), kind)
+            return
+        if self._handle_conversation_route("GET"):
             return
         if self.path.startswith("/api/laso/"):
             try:
@@ -297,6 +348,8 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(raw.decode("utf-8"))
             if not isinstance(body, dict):
                 raise WebError(400, "Request body must be a JSON object")
+            if self._handle_conversation_route("POST", body):
+                return
             path = "/api/v1/" + self.path[len("/api/laso/"):] if self.path.startswith("/api/laso/") else ""
             status, result = call_laso(self.server.config, "POST", path, body)
             self._json(status, result)
@@ -304,6 +357,58 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": "Malformed JSON request"})
         except WebError as exc:
             self._json(exc.status, {"error": exc.message, "detail": exc.detail})
+
+    def do_PATCH(self) -> None:  # noqa: N802
+        self._state_change("PATCH")
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._state_change("DELETE")
+
+    def _state_change(self, method: str) -> None:
+        if not self._host_ok():
+            self._json(421, {"error": "Host is not allowed"})
+            return
+        if not self._authorized():
+            return
+        origin = self.headers.get("Origin")
+        if origin:
+            parsed = urlsplit(origin)
+            if not parsed.netloc or parsed.netloc.casefold() != self.headers.get("Host", "").casefold():
+                self._json(403, {"error": "Cross-origin state changes are not allowed"})
+                return
+        body = None
+        if method == "PATCH":
+            if self.headers.get_content_type() != "application/json":
+                self._json(415, {"error": "Content-Type must be application/json"})
+                return
+            try:
+                lengths = self.headers.get_all("Content-Length", [])
+                if self.headers.get("Transfer-Encoding") or len(lengths) != 1 or not lengths[0].isdecimal():
+                    raise WebError(400, "A single Content-Length header is required")
+                size = int(lengths[0])
+                if size > MAX_BODY:
+                    raise WebError(413, "Request body exceeds 1 MiB")
+                value = json.loads(self.rfile.read(size).decode("utf-8"))
+                if not isinstance(value, dict):
+                    raise WebError(400, "Request body must be a JSON object")
+                body = value
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                self._json(400, {"error": "Malformed JSON request"})
+                return
+            except WebError as exc:
+                self._json(exc.status, {"error": exc.message})
+                return
+        else:
+            lengths = self.headers.get_all("Content-Length", [])
+            if self.headers.get("Transfer-Encoding") or len(lengths) > 1 or lengths and lengths[0] != "0":
+                self.close_connection = True
+                self._json(400, {"error": "DELETE requests must not include a body"})
+                return
+        try:
+            if not self._handle_conversation_route(method, body):
+                self._json(404, {"error": "Not found"})
+        except Exception:
+            self._json(500, {"error": "Request could not be completed"})
 
     def log_message(self, fmt: str, *args: object) -> None:
         # Keep client addresses, paths, headers, bodies, and credentials out of logs.

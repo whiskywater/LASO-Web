@@ -10,6 +10,26 @@
     return value && Array.isArray(value.items) ? value.items : [];
   }
 
+  function normalizeCapabilities(value) {
+    const source = value && Array.isArray(value.capabilities) ? value.capabilities : [];
+    return [...new Set(source.filter(item => typeof item === "string" && /^[a-z][a-z0-9_.-]{0,127}$/.test(item)))]
+      .sort();
+  }
+
+  function can(value, required) {
+    const granted = new Set(normalizeCapabilities(value));
+    return Array.isArray(required) ? required.some(capability => granted.has(capability))
+      : granted.has(String(required || ""));
+  }
+
+  function presentationRole(value) {
+    const granted = new Set(normalizeCapabilities(value));
+    if (["users.view", "users.create", "users.disable", "users.change_role", "configuration.edit"]
+      .some(capability => granted.has(capability))) return "Admin";
+    if (granted.has("conversations.create") || granted.has("runs.create")) return "Standard";
+    return "Unknown";
+  }
+
   function stateOf(value) {
     return value?.state ?? value?.status ?? value?.decision ?? "unknown";
   }
@@ -167,6 +187,6 @@
       : `#/${["new", "history", "workers", "approvals", "schedules", "system"].includes(view) ? view : "new"}`;
   }
 
-  return { items, stateOf, stateTone, terminal, pending, humanize, promptOf, pipelineName, runTitle,
+  return { items, normalizeCapabilities, can, presentationRole, stateOf, stateTone, terminal, pending, humanize, promptOf, pipelineName, runTitle,
     relativeTime, dateLabel, stateCopy, durationLabel, activitySummary, outputText, messageLabel, route, routeHash };
 });

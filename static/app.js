@@ -11,6 +11,7 @@ const state = {
   sidebarKey: "", renderKey: "", noticeTimer: 0
 };
 const endpoints = {
+  feature_discovery: "/api/features",
   health: "/api/laso/health", version: "/api/laso/version",
   workers: "/api/laso/workers?limit=100&offset=0", jobs: "/api/laso/worker-jobs?limit=100&offset=0",
   runs: "/api/laso/runs?limit=100&offset=0", pipelines: "/api/laso/pipelines?limit=100&offset=0",
@@ -71,6 +72,21 @@ function showNotice(message, isError = false) {
 }
 function errorFor(name) { return state.errors[name] || ""; }
 
+function updateFeatureStatus() {
+  const banner = $("#feature-status");
+  const discovery = state.data.feature_discovery;
+  if (!discovery) {
+    banner.hidden = true;
+    return;
+  }
+  if (discovery.conversations_available) {
+    banner.textContent = "LASO advertises conversation APIs. The conversation workspace is not enabled in this LASO-Web release yet.";
+  } else {
+    banner.textContent = `Persistent conversations are unavailable: ${discovery.reason || "the connected LASO server does not advertise the required conversation and identity capabilities."} Existing run workflows remain available.`;
+  }
+  banner.hidden = false;
+}
+
 async function api(path, options = {}) {
   let response;
   try {
@@ -107,6 +123,7 @@ async function refresh(options = {}) {
       if (state.data[key] === undefined) state.data[key] = [];
     }
   });
+  updateFeatureStatus();
   const online = !errorFor("health") && state.data.health?.status === "ok";
   $("#connection-dot").className = `dot ${online ? "good" : "bad"}`;
   $("#connection-label").textContent = online ? "Connected" : "Reconnecting…";

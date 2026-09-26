@@ -39,6 +39,8 @@ LASO-Web currently presents run workspaces. It does not yet provide persistent c
 
 Continuous conversations require LASO to own durable conversation and message records, membership checks, and the effective context passed to each run. In particular, compaction must happen in LASO and retain the original messages as audit history. The exact proposed API and storage requirements are in [the conversation continuity contract](docs/continuous-conversations.md). Until those APIs and authenticated identity are available, same-conversation multi-device continuity and Standard/Admin user accounts are not operational.
 
+LASO-Web now has a single conversation service boundary and checks backend-advertised feature/capability names rather than version numbers. When the connected LASO API lacks identity or capability discovery, the UI says conversations are unavailable and existing run workflows remain active. The boundary and handoff are documented in [the architecture guide](docs/architecture.md) and [the LASO backend handoff](docs/laso-backend-conversation-handoff.md).
+
 ## Requirements and quick start
 
 Requirements: Python 3.10 or newer and a reachable LASO HTTP API. LASO-Web has no third-party Python dependencies.

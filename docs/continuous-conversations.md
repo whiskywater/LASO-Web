@@ -27,14 +27,25 @@ use the same policy as message submission.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/v1/conversations?limit=&offset=&cursor=` | List conversations visible to the authenticated principal, ordered by `updated_at` descending with stable pagination. |
+| `GET` | `/api/v1/me` | Return the authenticated principal established by the configured authentication adapter. |
+| `GET` | `/api/v1/capabilities` | Advertise backend feature names and the current principal's capability names; never accept client-supplied capability claims. |
+| `GET` | `/api/v1/conversations?limit=&offset=` | List conversations visible to the authenticated principal, ordered by `updated_at` descending with stable pagination. |
 | `POST` | `/api/v1/conversations` | Create a conversation; accept a title and permitted pipeline/settings selection. Derive owner and initial membership from identity/policy. |
 | `GET` | `/api/v1/conversations/{id}` | Read title, metadata, membership-visible summary, revision, and timestamps. |
 | `PATCH` | `/api/v1/conversations/{id}` | Rename or change permitted metadata/settings, guarded by capability policy and an expected revision. |
 | `DELETE` | `/api/v1/conversations/{id}` | Optional soft-delete/archive, subject to policy and retention rules. |
 | `GET` | `/api/v1/conversations/{id}/messages?after=&limit=` | Read the canonical chronological message history. Return stable sequence numbers and opaque message IDs; pagination must not reorder records. |
-| `POST` | `/api/v1/conversations/{id}/messages` | Append a user message and start a run using LASO's effective context for this conversation. Require an idempotency key and expected conversation revision. Return the message ID, run ID, and accepted conversation revision. |
+| `GET` | `/api/v1/conversations/{id}/messages/{message_id}` | Read one authorized immutable message. |
+| `POST` | `/api/v1/conversations/{id}/turns` | Append a user message and start a run using LASO's effective context for this conversation. Require an idempotency key and expected conversation revision. Return the message ID, run ID, and accepted conversation revision. |
+| `GET` | `/api/v1/conversations/{id}/members` | List members visible to the principal under the conversation policy. |
+| `POST` | `/api/v1/conversations/{id}/members` | Add a member when policy grants membership management. |
+| `DELETE` | `/api/v1/conversations/{id}/members/{principal_id}` | Remove a member when policy grants membership management. |
+| `GET` | `/api/v1/conversations/{id}/context` | Return effective context and compaction status metadata. |
 | `GET` | `/api/v1/conversations/{id}/events?after=` | Optional event feed for cross-client updates. It may be SSE later; polling must remain a supported fallback. |
+
+The concrete request/response fields, pagination, capability names, revision
+semantics, concurrency rules, and error mapping are detailed in the
+[LASO backend handoff](laso-backend-conversation-handoff.md).
 
 Message responses need at least `id`, `conversation_id`, monotonically
 increasing `sequence`, `actor_id` (when available), `role` or typed message
@@ -52,19 +63,28 @@ retained history; it must not return only the effective model context.
 
 ## Durable context and compaction
 
-LASO must retain original messages independently from derived model context.
-Compaction is performed in LASO at a serialized conversation revision and
-creates a durable generation/checkpoint containing:
+LASO must preserve three separate records:
 
-* conversation ID and monotonically increasing generation;
-* source-message sequence range and source revision represented;
-* compacted summary/context payload, provenance, and creation time;
-* effective context budget and compaction policy/version;
-* the recent uncompressed messages retained after the checkpoint.
+1. **Full history:** all original conversation messages, retained durably and
+   in order as the conversation audit record.
+2. **Derived context generation:** an immutable compacted representation used
+   to fit context limits. Compaction is performed in LASO at a serialized
+   conversation revision and creates a durable generation/checkpoint
+   containing:
 
-Every run records the conversation ID, triggering message ID, the context
-generation/revision it consumed, and the effective pipeline/model selection.
-The full original transcript remains queryable after compaction. A client can
+   * conversation ID and monotonically increasing generation;
+   * source-message sequence range and source revision represented;
+   * compacted summary/context payload, provenance, and creation time;
+   * effective context budget and compaction policy/version;
+   * the recent uncompressed messages retained after the checkpoint.
+3. **Run context snapshot:** a durable manifest pinned when a run is created,
+   identifying the exact context generation, original message IDs/range,
+   effective pipeline/model/configuration revisions, and immutable content
+   references needed to establish exactly what LASO supplied to the run.
+
+Every run records the conversation ID, triggering message ID, and the run
+context snapshot ID. The full original transcript remains queryable after
+compaction. A client can
 display context status and request a permitted policy change, but it must not
 trim, summarize, or choose an alternative prompt history locally. Replaying an
 old run must use the recorded run inputs, not rebuild context from a browser's
