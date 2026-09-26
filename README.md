@@ -1,6 +1,6 @@
 # LASO-Web
 
-LASO-Web is a lightweight, task-first workspace for [LASO](https://github.com/Registered-Agent-Attorney/LASO). It is a separate optional application: LASO remains the orchestration/runtime core, while this project provides a friendly browser interface over LASO's existing JSON HTTP API.
+LASO-Web is a lightweight workspace for [LASO](https://github.com/Registered-Agent-Attorney/LASO). It is a separate optional application: LASO remains the orchestration/runtime core, while this project provides a browser interface over LASO's JSON HTTP API.
 
 The architecture is intentionally simple:
 
@@ -8,7 +8,7 @@ The architecture is intentionally simple:
 Browser → LASO-Web (static UI + bounded same-origin API adapter) → LASO HTTP API
 ```
 
-The adapter keeps LASO credentials out of browser JavaScript and avoids needing permissive CORS support in LASO. The application uses Python's standard library only; there is no npm build or runtime database.
+The adapter keeps LASO credentials out of browser JavaScript and avoids needing permissive CORS support in LASO. The checked-in implementation currently uses Python's standard library; there is no Go migration or runtime database on this branch.
 
 The workspace and run-thread screenshots use a safe deterministic Hello-pipeline fixture:
 
@@ -32,6 +32,12 @@ Based on LASO's published `/api/v1` interface (see its [API reference](https://g
 * read-only schedule listing and a secondary system-status view.
 
 LASO assigns workers through pipeline definitions; it does not expose a separate operator API for changing worker assignments, so this UI does not invent one. Schedule listing is supported, but schedule editing is not included in this first release. Artifact listing/browsing, live event streams, worker-specific health probes, and configuration editing are also omitted because the current HTTP interface does not provide those GUI operations. LASO exposes no CORS headers; same-origin proxying is used instead.
+
+### Conversation continuity status
+
+LASO-Web currently presents run workspaces. It does not yet provide persistent conversations. The current LASO API has run-scoped messages and events, but no conversation ID, ordered conversation history, membership/ownership API, or message-to-conversation relationship. A run (or an external worker's resumable session ID) is not a LASO conversation. LASO-Web does not save prompts/results in browser storage or assemble prior runs into model context.
+
+Continuous conversations require LASO to own durable conversation and message records, membership checks, and the effective context passed to each run. In particular, compaction must happen in LASO and retain the original messages as audit history. The exact proposed API and storage requirements are in [the conversation continuity contract](docs/continuous-conversations.md). Until those APIs and authenticated identity are available, same-conversation multi-device continuity and Standard/Admin user accounts are not operational.
 
 ## Requirements and quick start
 
@@ -73,7 +79,7 @@ After LASO accepts a run, its workspace refreshes automatically every five secon
 
 **Workers**, **Approvals**, **Schedules**, and **System** remain available from the secondary navigation. LASO-Web only exposes API operations that LASO actually supports; worker assignment, pipeline authoring, schedule editing, and artifact browsing are not invented in the UI.
 
-LASO's current local-development identity is unauthenticated. Therefore LASO-Web should be treated as an administrative console, not an internet-facing application. Keep both services on loopback/private network by default. For remote access, use a TLS reverse proxy, set a strong `LASO_WEB_PASSWORD`, and configure LASO's own supported identity/authorization before exposing sensitive operations. Do not bind LASO's unauthenticated development API publicly.
+LASO's current local-development identity is unauthenticated, and this LASO-Web release has one optional shared Basic-auth operator credential rather than distinct Standard/Admin accounts. Therefore LASO-Web should be treated as an administrative console, not an internet-facing multi-user application. Keep both services on loopback/private network by default. For remote access, use a TLS reverse proxy, set a strong `LASO_WEB_PASSWORD`, and configure LASO's own supported identity/authorization before exposing sensitive operations. Do not bind LASO's unauthenticated development API publicly.
 
 ## Linux production installation
 
@@ -134,4 +140,4 @@ The test stops its temporary LASO server and removes its isolated data directory
 
 ## Known limitations
 
-This is an operator UI, not an identity provider, general API gateway, or full LASO client SDK. LASO's unauthenticated local identity means remote deployment requires explicit network controls and authentication at the web layer; the bundled Basic auth is intended to be used only over TLS. The application does not provide streaming updates, pipeline authoring, schedule editing, direct worker selection, artifact browsing, or new server-side authorization policy.
+This is an operator UI, not an identity provider, general API gateway, or full LASO client SDK. Its shared Basic authentication is not a per-user authorization system. LASO's unauthenticated local identity means remote deployment requires explicit network controls and authentication at the web layer; the bundled Basic auth is intended to be used only over TLS. The application does not provide streaming updates, pipeline authoring, schedule editing, direct worker selection, artifact browsing, or new server-side authorization policy.

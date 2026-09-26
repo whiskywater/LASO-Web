@@ -120,6 +120,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual(server.validate_upstream_path("GET", "/api/v1/health"), "/api/v1/health")
         self.assertEqual(server.validate_upstream_path("POST", "/api/v1/pipelines/hello@1/runs"), "/api/v1/pipelines/hello@1/runs")
         for method, path in (("GET", "http://example.invalid/"), ("GET", "/api/v1/artifacts/x"),
+                             ("GET", "/api/v1/conversations"),
                              ("POST", "/api/v1/workers/worker/start"), ("GET", "/api/v1/runs?next=http://example.invalid"),
                              ("POST", "/api/v1/approvals/a/approve?limit=1&offset=0")):
             with self.subTest(path=path), self.assertRaises(server.WebError):
@@ -283,6 +284,8 @@ class WebTests(unittest.TestCase):
         javascript = (Path(__file__).resolve().parents[1] / "static" / "app.js").read_text()
         self.assertIn("node.textContent = content", javascript)
         self.assertNotIn("innerHTML", javascript)
+        self.assertNotIn("localStorage", javascript)
+        self.assertNotIn("sessionStorage", javascript)
         self.assertIn("textContent = message", javascript)
 
 
