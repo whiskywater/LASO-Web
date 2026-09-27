@@ -72,7 +72,7 @@ The LASO URL is deployment configuration, not browser input. The server forwards
 
 Choose **New chat**, select a registered LASO pipeline, and create a session. The URL `/sessions/<session-id>` identifies the durable LASO session and can be bookmarked or opened from another LASO-Web client connected to the same LASO deployment. Messages are submitted as idempotent session turns using the selected pipeline's `prompt` input. LASO runs sequentially and returns durable turns linked to run IDs; the UI shows run details secondarily. A pipeline requiring a different input schema should be adapted before using the chat composer.
 
-LASO's session API has no title or rename field yet. The sidebar derives a display label from the first turn, with a pipeline/date fallback. LASO-Web deliberately does not save titles or transcripts locally. The page restores the latest ordered turn page from `GET /sessions/{id}/turns` on each load; **Load earlier turns** retrieves prior pages from LASO on demand.
+LASO's session API has no title or rename field yet. The sidebar derives a display label from the first turn, with a pipeline/date fallback, and orders sessions by LASO's update/create timestamps. Its filter searches only loaded recent session labels, pipeline IDs, session IDs, and state; it does not claim to search full message history. LASO-Web deliberately does not save titles or transcripts locally. The page restores the latest ordered turn page from `GET /sessions/{id}/turns` on each load; **Load earlier turns** retrieves prior pages from LASO on demand. Closing a session uses LASO's close endpoint; history remains readable and the UI prevents further turn submission. LASO does not currently expose a reopen operation.
 
 ## Durable sessions and live updates
 
@@ -132,7 +132,21 @@ Upstream requests time out after 8 seconds. Browser requests have a 10-second de
 
 ## Development and tests
 
-Go 1.23+ builds and runs the complete application without third-party modules. Node.js 22 is used only for browser model tests. Python is used only by optional real-LASO integration harnesses.
+Go 1.23+ builds and runs the complete application without third-party modules. Node.js 22 is used for browser model tests and the optional Playwright acceptance suite. Python is used only by optional real-LASO integration harnesses.
+
+### Browser acceptance tests
+
+The Playwright suite drives Chromium against a real isolated LASO server and two independently started Go LASO-Web processes. It uses temporary SQLite state, dynamic loopback ports, a test-only Basic password, and temporary logs. Coverage includes two-client session observation, ordered turns, run links, disconnect and replay, LASO restart, deep-link reload, session close, authenticated standalone runs/operator views, approval decisions, the schedules empty state, outage recovery, and a narrow mobile viewport. The browser never seeds a local transcript store.
+
+Install Node.js 22, Go 1.23+, CMake/Ninja, LASO's C++ build dependencies, and Playwright's Chromium system dependencies. From a clean LASO-Web checkout beside a clean LASO checkout, run:
+
+```sh
+npm ci
+npx playwright install --with-deps chromium
+LASO_SOURCE_DIR=../LASO tests/e2e/build-and-test.sh
+```
+
+The script builds LASO's server executable and Go LASO-Web, then runs the browser suite. It does not reuse an existing service, database, browser profile, or fixed port. On failure, Playwright attaches screenshots/traces and retains the temporary service logs at the printed path. The dedicated `browser acceptance` workflow runs the suite against the LASO main commit pinned in its checkout step; PRs #16–#19 are not dependencies.
 
 ```sh
 gofmt -w main.go internal/web/*.go

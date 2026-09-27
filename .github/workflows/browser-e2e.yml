@@ -1,0 +1,52 @@
+name: browser acceptance
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  real-laso-browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install LASO build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ libyaml-cpp-dev nlohmann-json3-dev libsqlite3-dev libspdlog-dev libcli11-dev libboost-system-dev
+      - name: Check out the tested LASO runtime
+        run: |
+          git clone --no-checkout https://github.com/Registered-Agent-Attorney/LASO.git ../LASO
+          git -C ../LASO checkout 3cf8bed43d841086d58716bad223e08d6bf22a74
+      - name: Build LASO and LASO-Web, install Playwright browser
+        run: |
+          cmake -S ../LASO -B ../LASO/build-browser-e2e -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=OFF -DLASO_INSTALL_SYSTEMD_UNIT=OFF
+          cmake --build ../LASO/build-browser-e2e --target laso-server --parallel 2
+          mkdir -p build
+          go build -trimpath -o build/laso-web .
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Run Go, model, and browser acceptance tests
+        run: |
+          go test -count=1 ./...
+          node --test tests/test_ui_model.cjs tests/test_session_model.cjs
+          npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: laso-web-browser-failure-artifacts
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore

@@ -3,3 +3,10 @@ __pycache__/
 *.py[cod]
 .venv/
 .pytest_cache/
+node_modules/
+.playwright-browsers/
+test-results/
+playwright-report/
+.test-work/
+.tooling/
+build/

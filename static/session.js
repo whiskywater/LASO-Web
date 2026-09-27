@@ -7,9 +7,14 @@ const sessionID = (() => {
   catch { return ""; }
 })();
 let session = null, turns = [], pipelines = [], cursor = new window.LasoSessionModel.Cursor(), durableCursor = "0", closed = false, retryDelay = 500;
-let pendingTurn = null;
+let pendingTurn = null, submitting = false, sidebarSessions = [], draftMessage = "";
 let latestOffset = 0, oldestLoadedOffset = 0, moreOlder = false, sessionTitle = "";
-const status = (message = "", error = false) => { const node = $("#chat-status"); node.textContent = message; node.classList.toggle("error", error); };
+const status = (message = "", state = "live") => {
+  const node = $("#chat-status");
+  node.textContent = message;
+  node.dataset.state = state;
+  node.classList.toggle("error", state === "error" || state === "unavailable");
+};
 const escText = value => String(value ?? "");
 
 async function api(path, options = {}) {
@@ -40,6 +45,8 @@ function outputText(value) {
 function titleOf(turnList, item) { return inputText(turnList[0]?.input).replace(/\s+/g, " ").slice(0, 58) || `${item.pipeline_id || "LASO session"} · ${new Date(item.created_at || Date.now()).toLocaleDateString()}`; }
 function appendBubble(thread, cls, content, turn, runID = "") {
   const bubble = document.createElement("article"); bubble.className = `bubble ${cls}`;
+  bubble.dataset.testid = cls === "user" ? "user-turn" : "assistant-turn";
+  bubble.setAttribute("aria-label", cls === "user" ? "Your message" : "LASO response");
   const body = document.createElement("div");
   if (typeof content === "string") body.textContent = content;
   else { const pre = document.createElement("pre"); pre.textContent = JSON.stringify(content, null, 2); body.append(pre); }
@@ -64,7 +71,7 @@ function renderThread() {
     older.addEventListener("click", async () => {
       older.disabled = true; const top = scroll.scrollTop, height = scroll.scrollHeight;
       try { await loadOlderTurns(); renderThread(); const nextScroll = $(".chat-scroll"); nextScroll.scrollTop = top + nextScroll.scrollHeight - height; }
-      catch (error) { status(error.message, true); older.disabled = false; }
+      catch (error) { status(error.message, "error"); older.disabled = false; }
     });
     thread.append(older);
   }
@@ -84,26 +91,42 @@ function renderThread() {
   if (session.state === "open") {
     const wrap = document.createElement("div"); wrap.className = "composer-wrap";
     const form = document.createElement("form");
-    const input = document.createElement("textarea"); input.id = "message"; input.placeholder = "Message LASO…"; input.rows = 2; input.setAttribute("aria-label", "Message LASO");
+    const input = document.createElement("textarea"); input.id = "message"; input.dataset.testid = "message-composer"; input.placeholder = "Message LASO…"; input.rows = 2; input.value = draftMessage; input.setAttribute("aria-label", "Message LASO"); input.setAttribute("aria-describedby", "composer-help");
+    input.addEventListener("input", () => { draftMessage = input.value; });
     input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); } });
-    const send = document.createElement("button"); send.className = "send"; send.textContent = "Send"; send.type = "submit";
-    form.append(input, send);
+    const send = document.createElement("button"); send.className = "send"; send.dataset.testid = "send-turn"; send.textContent = "Send"; send.type = "submit";
+    const help = document.createElement("span"); help.id = "composer-help"; help.className = "visually-hidden"; help.textContent = "Press Enter to send. Press Shift and Enter for a new line.";
+    form.append(input, send, help);
     form.addEventListener("submit", async e => {
-      e.preventDefault(); const message = input.value.trim(); if (!message) return;
-      send.disabled = true; status("Submitting turn…");
+      e.preventDefault(); const message = input.value.trim(); if (!message || submitting || session.state !== "open") return;
+      draftMessage = input.value; submitting = true; send.disabled = true;
+      const closeControl = $(`[data-testid="close-session"]`, wrap); if (closeControl) closeControl.disabled = true;
+      status("Submitting turn to LASO…", "submitting");
       if (!pendingTurn || pendingTurn.message !== message) pendingTurn = { message, key: crypto.randomUUID() };
       try {
         const accepted = await api(`/api/laso/sessions/${encodeURIComponent(session.id)}/turns`, { method: "POST", body: JSON.stringify({ idempotency_key: pendingTurn.key, input: { prompt: message } }) });
         const known = turns.findIndex(turn => turn.id === accepted.id);
         if (known >= 0) turns[known] = accepted; else turns.push(accepted);
-        pendingTurn = null;
+        pendingTurn = null; draftMessage = "";
         if (!sessionTitle || sessionTitle.startsWith(`${session.pipeline_id} ·`)) sessionTitle = inputText(accepted.input).replace(/\s+/g, " ").slice(0, 58);
-        renderThread(); status("Turn accepted by LASO."); populateSidebar(); scheduleReload();
-      } catch (error) { status(`${error.message} If you retry after an uncertain response, the server may have accepted the turn; check the history first.`, true); send.disabled = false; }
+        renderThread(); status("Turn accepted by LASO.", "live"); sidebarSessions = []; populateSidebar(); scheduleReload();
+      } catch (error) { status(`${error.message} If you retry after an uncertain response, LASO may already have accepted it; check the history first.`, "error"); send.disabled = false; if (closeControl) closeControl.disabled = false; }
+      finally { submitting = false; }
     });
     wrap.append(form); root.append(wrap); scroll.scrollTop = scroll.scrollHeight;
+    const close = document.createElement("button"); close.type = "button"; close.className = "close-session"; close.dataset.testid = "close-session"; close.textContent = "Close session"; close.setAttribute("aria-label", "Close this LASO session"); close.disabled = submitting;
+    close.addEventListener("click", async () => {
+      if (submitting || session.state !== "open" || !window.confirm("Close this LASO session? Its history will remain available, but no more turns can be submitted.")) return;
+      close.disabled = true; status("Closing LASO session…", "submitting");
+      try {
+        await api(`/api/laso/sessions/${encodeURIComponent(session.id)}/close`, { method: "POST", body: "{}" });
+        session = await api(`/api/laso/sessions/${encodeURIComponent(session.id)}`);
+        closed = true; await loadTurns(); renderThread(); sidebarSessions = []; await populateSidebar(); status("Session closed. Its history remains available.", "closed");
+      } catch (error) { status(`Could not close session: ${error.message}`, "error"); close.disabled = false; }
+    });
+    wrap.append(close);
   } else {
-    const closedNote = document.createElement("p"); closedNote.className = "empty"; closedNote.textContent = "This LASO session is closed."; root.append(closedNote);
+    const closedNote = document.createElement("p"); closedNote.className = "empty"; closedNote.dataset.testid = "closed-session-note"; closedNote.setAttribute("role", "status"); closedNote.textContent = "This LASO session is closed. Its history is available, but LASO will not accept new turns."; root.append(closedNote);
   }
   document.title = `${sessionTitle || titleOf([], session)} · LASO`;
 }
@@ -166,11 +189,11 @@ function scheduleReload() {
     reloadTimer = 0;
     const through = cursor.header() || "0";
     try {
-      await loadLatestTurns(); renderThread();
+      await loadLatestTurns(); renderThread(); sidebarSessions = []; await populateSidebar();
       if (BigInt(through) > BigInt(durableCursor)) durableCursor = through;
       if (BigInt(cursor.header() || "0") < BigInt(durableCursor)) cursor = new window.LasoSessionModel.Cursor(durableCursor);
     }
-    catch (error) { status(`${error.message} Retrying durable history shortly.`, true); reloadTimer = setTimeout(() => { reloadTimer = 0; scheduleReload(); }, 1000); }
+    catch (error) { status(`LASO is temporarily disconnected. Retrying durable history shortly. ${error.message}`, "reconnecting"); reloadTimer = setTimeout(() => { reloadTimer = 0; scheduleReload(); }, 1000); }
   }, 100);
 }
 async function streamLoop() {
@@ -184,7 +207,7 @@ async function streamLoop() {
         if (response.status === 404 || response.status === 405) { compatibility("This LASO server does not support session event streaming. Upgrade LASO to a build with durable session SSE."); return; }
         const err = new Error(detail || `LASO event stream unavailable (${response.status}).`); err.retryAfter = Number(response.headers.get("Retry-After") || 0); throw err;
       }
-      retryDelay = 500; status("Connected to durable LASO session events.");
+      retryDelay = 500; status("Live · connected to LASO session events.", "live");
       const reader = response.body.getReader(), decoder = new TextDecoder(); let buffer = "";
       while (!closed) {
         const { value, done } = await reader.read(); if (done) break;
@@ -196,7 +219,11 @@ async function streamLoop() {
           if (!frame || frame.startsWith(":")) continue;
           const parsed = cursor.accept(frame); if (!parsed) continue;
           scheduleReload();
-          if (parsed.event?.type === "session.closed") { session.state = "closed"; closed = true; break; }
+          if (parsed.event?.type === "session.closed") {
+            try { session = await api(`/api/laso/sessions/${encodeURIComponent(session.id)}`); await loadTurns(); }
+            catch { session.state = "closed"; }
+            closed = true; renderThread(); sidebarSessions = []; await populateSidebar(); status("Session closed. Its history remains available.", "closed"); break;
+          }
         }
         if (buffer.length > 4 * 1024 * 1024) { await reader.cancel(); throw new Error("LASO event exceeded the 4 MiB frame limit."); }
       }
@@ -211,7 +238,7 @@ async function streamLoop() {
       if (closed) break;
       if (durableCursor !== cursor.header()) cursor = new window.LasoSessionModel.Cursor(durableCursor);
       const wait = Math.max(error.retryAfter * 1000, retryDelay);
-      status(`${error.message} Reconnecting in ${Math.ceil(wait / 1000)}s.`); await new Promise(resolve => setTimeout(resolve, wait)); retryDelay = Math.min(retryDelay * 2, 15000);
+      status(`Reconnecting to LASO in ${Math.ceil(wait / 1000)}s. Your durable history remains available.`, "reconnecting"); await new Promise(resolve => setTimeout(resolve, wait)); retryDelay = Math.min(retryDelay * 2, 15000);
     }
   }
 }
@@ -224,34 +251,58 @@ function compatibility(message) {
   box.append(title, body, link); root.append(box);
 }
 document.querySelector("#session-nav-toggle")?.addEventListener("click", () => {
-  document.querySelector(".chat-layout")?.classList.toggle("sidebar-open");
+  const layout = document.querySelector(".chat-layout");
+  const toggle = document.querySelector("#session-nav-toggle");
+  const open = layout?.classList.toggle("sidebar-open") || false;
+  toggle?.setAttribute("aria-expanded", String(open));
+  toggle?.setAttribute("aria-label", open ? "Hide session list" : "Show session list");
 });
 document.querySelector("#session-list")?.addEventListener("click", event => {
-  if (event.target.closest("a")) document.querySelector(".chat-layout")?.classList.remove("sidebar-open");
+  if (event.target.closest("a")) {
+    document.querySelector(".chat-layout")?.classList.remove("sidebar-open");
+    const toggle = document.querySelector("#session-nav-toggle");
+    toggle?.setAttribute("aria-expanded", "false");
+    toggle?.setAttribute("aria-label", "Show session list");
+  }
 });
 async function populateSidebar() {
   const nav = $("#session-list");
   try {
-    const all = [];
-    for (let offset = 0, page = 0; page < 100; page++) {
-      const items = values(await api(`/api/laso/sessions?limit=100&offset=${offset}`));
-      all.push(...items); if (items.length < 100) break; offset += items.length;
+    if (!sidebarSessions.length) {
+      const all = [];
+      for (let offset = 0, page = 0; page < 100; page++) {
+        const items = values(await api(`/api/laso/sessions?limit=100&offset=${offset}`));
+        all.push(...items); if (items.length < 100) break; offset += items.length;
+      }
+      const items = all.sort((a,b) => Date.parse(b.updated_at || b.created_at || "") - Date.parse(a.updated_at || a.created_at || "")).slice(0,20);
+      sidebarSessions = await Promise.all(items.map(async item => {
+        let itemTurns = [];
+        try { itemTurns = values(await api(`/api/laso/sessions/${encodeURIComponent(item.id)}/turns?limit=1&offset=0`)); } catch {}
+        return { item, title: titleOf(itemTurns, item) };
+      }));
     }
-    const items = all.sort((a,b) => Date.parse(b.updated_at || b.created_at || "") - Date.parse(a.updated_at || a.created_at || "")).slice(0,20);
-    nav.replaceChildren();
-    const labels = await Promise.all(items.map(async item => {
-      let itemTurns = [];
-      try { itemTurns = values(await api(`/api/laso/sessions/${encodeURIComponent(item.id)}/turns?limit=1&offset=0`)); } catch {}
-      return { item, title: titleOf(itemTurns, item) };
-    }));
-    for (const {item, title} of labels) {
-      const link = document.createElement("a"); link.className = `session-item${item.id === sessionID ? " active" : ""}`; link.href = `/sessions/${encodeURIComponent(item.id)}`;
-      link.textContent = title;
-      const meta = document.createElement("small"); meta.textContent = `${item.state || "open"} · ${new Date(item.updated_at || item.created_at).toLocaleDateString()}`; link.append(meta); nav.append(link);
-    }
-    if (!items.length) nav.append(Object.assign(document.createElement("p"), { className: "muted", textContent: "No sessions yet." }));
-  } catch { nav.replaceChildren(Object.assign(document.createElement("p"), { className: "muted", textContent: "LASO sessions are unavailable." })); }
+    renderSidebar();
+  } catch {
+    sidebarSessions = [];
+    nav.replaceChildren(Object.assign(document.createElement("p"), { className: "muted", textContent: "LASO sessions are unavailable. Retry after the connection returns." }));
+  }
 }
+function renderSidebar() {
+  const nav = $("#session-list"); if (!nav) return;
+  const query = $("#session-filter")?.value.trim().toLocaleLowerCase() || "";
+  const matches = sidebarSessions.filter(({item,title}) => [title, item.id, item.pipeline_id, item.state].some(value => String(value || "").toLocaleLowerCase().includes(query)));
+  nav.replaceChildren();
+  for (const {item,title} of matches) {
+    const link = document.createElement("a"); link.className = `session-item${item.id === sessionID ? " active" : ""}`; link.href = `/sessions/${encodeURIComponent(item.id)}`;
+    link.dataset.testid = "session-item"; link.dataset.state = item.state || "open";
+    if (item.id === sessionID) link.setAttribute("aria-current", "page");
+    link.append(document.createTextNode(title));
+    const meta = document.createElement("small"); meta.textContent = `${item.state || "open"} · ${new Date(item.updated_at || item.created_at || Date.now()).toLocaleDateString()}`; link.append(meta); nav.append(link);
+  }
+  if (!sidebarSessions.length) nav.append(Object.assign(document.createElement("p"), { className: "muted", textContent: "No sessions yet. Create a new chat to begin." }));
+  else if (!matches.length) nav.append(Object.assign(document.createElement("p"), { className: "muted", textContent: "No recent sessions match this filter." }));
+}
+document.querySelector("#session-filter")?.addEventListener("input", renderSidebar);
 async function newSessionPage() {
   const root = $("#chat-content");
   try {
@@ -266,19 +317,19 @@ async function newSessionPage() {
   const card = document.createElement("form"); card.className = "form-card";
   const heading = document.createElement("h1"); heading.textContent = "Start a session";
   const blurb = document.createElement("p"); blurb.textContent = "A LASO session is durable ordered execution state. Choose its pipeline; your first message will start the conversation.";
-  const label = document.createElement("label"); label.textContent = "Pipeline";
-  const select = document.createElement("select"); select.className = "pipeline-select"; select.required = true;
+  const label = document.createElement("label"); label.textContent = "Pipeline"; label.htmlFor = "session-pipeline";
+  const select = document.createElement("select"); select.id = "session-pipeline"; select.dataset.testid = "session-pipeline"; select.className = "pipeline-select"; select.required = true;
   select.add(new Option("Choose a pipeline", ""));
   pipelines.forEach(p => select.add(new Option(`${p.name || p.id} · v${p.version || 1}`, `${p.name || p.id}@${p.version || 1}`)));
   const send = document.createElement("button"); send.className = "primary"; send.textContent = "Create session";
   card.append(heading, blurb, label, select, send); root.replaceChildren(card);
   card.addEventListener("submit", async e => {
-    e.preventDefault(); send.disabled = true; status("Creating LASO session…");
+    e.preventDefault(); send.disabled = true; status("Creating LASO session…", "submitting");
     try {
       const created = await api("/api/laso/sessions", { method: "POST", body: JSON.stringify({ pipeline_id: select.value }) });
       if (!created.id || !ID.test(created.id)) throw new Error("LASO returned an invalid session ID.");
       location.assign(`/sessions/${encodeURIComponent(created.id)}`);
-    } catch (error) { status(error.message, true); send.disabled = false; }
+    } catch (error) { status(error.message, "error"); send.disabled = false; }
   });
 }
 async function openSession() {

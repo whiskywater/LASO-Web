@@ -1,0 +1,18 @@
+{
+  "name": "laso-web",
+  "version": "1.0.0",
+  "description": "Browser acceptance tests for LASO-Web against a real LASO server.",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/test_ui_model.cjs tests/test_session_model.cjs",
+    "test:e2e": "playwright test --config tests/e2e/playwright.config.cjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/whiskywater/LASO-Web.git"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@playwright/test": "1.56.1"
+  }
+}
