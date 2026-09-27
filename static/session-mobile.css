@@ -1,0 +1,4 @@
+.session-nav-toggle{display:none;background:none;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+.load-older{justify-self:center;padding:8px 13px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--muted);cursor:pointer}
+.load-older:disabled{opacity:.6;cursor:wait}
+@media(max-width:700px){.session-nav-toggle{display:block}.chat-layout{position:relative;grid-template-columns:1fr}.chat-sidebar{display:none;position:absolute;z-index:3;top:0;bottom:0;left:0;width:min(300px,84vw);box-shadow:12px 0 28px #0009}.chat-layout.sidebar-open .chat-sidebar{display:block}.chat-topbar{gap:12px}}

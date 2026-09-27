@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#11181d">
+  <title>LASO Session</title>
+  <link rel="stylesheet" href="/session.css">
+  <link rel="stylesheet" href="/session-mobile.css">
+</head>
+<body>
+  <header class="chat-topbar">
+    <button id="session-nav-toggle" class="session-nav-toggle" type="button" aria-label="Show session list">☰</button>
+    <a href="/" class="brand"><span class="brand-mark">L</span> LASO<span class="muted"> / WEB</span></a>
+    <a href="/" class="workspace-link">Run workspace</a>
+  </header>
+  <div class="chat-layout">
+    <aside class="chat-sidebar">
+      <a class="new-chat" href="/sessions/new">＋ New chat</a>
+      <h2>Sessions</h2>
+      <nav id="session-list" aria-label="Sessions"><p class="muted">Loading sessions…</p></nav>
+      <p class="sidebar-note">Sessions and their ordered turns are stored by LASO. Titles are derived from the first message; this LASO API does not yet support renaming.</p>
+    </aside>
+    <main class="chat-main">
+      <div id="chat-status" class="chat-status" role="status" aria-live="polite"></div>
+      <section id="chat-content"></section>
+    </main>
+  </div>
+  <script src="/session-model.js" defer></script>
+  <script src="/session.js" defer></script>
+</body>
+</html>

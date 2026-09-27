@@ -1,14 +1,14 @@
 # LASO-Web
 
-LASO-Web is a lightweight, task-first workspace for [LASO](https://github.com/Registered-Agent-Attorney/LASO). It is a separate optional application: LASO remains the orchestration/runtime core, while this project provides a friendly browser interface over LASO's existing JSON HTTP API.
+LASO-Web is a browser client for [LASO](https://github.com/Registered-Agent-Attorney/LASO). LASO remains the generic orchestration/runtime core. LASO-Web presents durable LASO sessions as conversations and retains the existing run/operator workspace for lower-level execution details.
 
 The architecture is intentionally simple:
 
 ```text
-Browser → LASO-Web (static UI + bounded same-origin API adapter) → LASO HTTP API
+Browser → LASO-Web (same-origin adapter) → LASO sessions, turns, runs and SSE
 ```
 
-The adapter keeps LASO credentials out of browser JavaScript and avoids needing permissive CORS support in LASO. The application uses Python's standard library only; there is no npm build or runtime database.
+The Go server is the session-chat path and serves embedded static assets. It keeps LASO credentials server-side, validates a strict API route allowlist, and proxies each client's SSE stream to LASO. It adds no conversation database, transcript cache, or process-local pub/sub. The older Python workspace remains available as a compatibility path; it does not implement session chat.
 
 The workspace and run-thread screenshots use a safe deterministic Hello-pipeline fixture:
 
@@ -31,22 +31,23 @@ Based on LASO's published `/api/v1` interface (see its [API reference](https://g
 * contextual pending approvals/worker requests on their associated run, plus a full decision queue;
 * read-only schedule listing and a secondary system-status view.
 
-LASO assigns workers through pipeline definitions; it does not expose a separate operator API for changing worker assignments, so this UI does not invent one. Schedule listing is supported, but schedule editing is not included in this first release. Artifact listing/browsing, live event streams, worker-specific health probes, and configuration editing are also omitted because the current HTTP interface does not provide those GUI operations. LASO exposes no CORS headers; same-origin proxying is used instead.
+LASO assigns workers through pipeline definitions; it does not expose a separate operator API for changing worker assignments, so this UI does not invent one. Schedule listing is supported, but schedule editing is not included in this release. Artifact listing/browsing, worker-specific health probes, and configuration editing are omitted because the current HTTP interface does not provide those GUI operations. Durable sessions use LASO's session SSE stream; the run/operator workspace continues to refresh its run-specific panels periodically. LASO exposes no CORS headers; same-origin proxying is used instead.
 
 ## Requirements and quick start
 
-Requirements: Python 3.10 or newer and a reachable LASO HTTP API. LASO-Web has no third-party Python dependencies.
+Requirements: Go 1.23 or newer and a reachable LASO HTTP API for the Go application. Python 3.10+ remains required only for the compatibility server and its tests.
 
 ```sh
 git clone https://github.com/whiskywater/LASO-Web.git
 cd LASO-Web
-cp .env.example .env
 ./run.sh
 ```
 
-The example config connects to LASO at `http://127.0.0.1:8080` and serves the UI at `http://127.0.0.1:8081`. Change `.env` to point at the LASO API. The small `.env` reader handles only `KEY=value` assignments and comments; it does not execute shell syntax or expand variables. Existing process environment variables override `.env` values.
+When Go is installed, `run.sh` starts the Go server. If Go is absent it starts the legacy Python workspace, which reports that durable sessions are unavailable. The Go server reads a simple `.env` file with `KEY=value` lines and comments; it does not execute shell syntax or expand variables. Process environment values take precedence. The default connects to LASO at `http://127.0.0.1:8080` and serves `http://127.0.0.1:8081`.
 
-Alternatively, configure explicitly without a file:
+Build a standalone Go binary with `go build -trimpath -o laso-web .`. To explicitly use the legacy Python server, run `python3 server.py`.
+
+Configure explicitly without a file:
 
 ```sh
 LASO_URL=http://127.0.0.1:8080 LASO_WEB_BIND=127.0.0.1 LASO_WEB_PORT=8081 ./run.sh
@@ -67,21 +68,48 @@ The LASO URL is deployment configuration, not browser input. The server forwards
 
 ## Connecting and using the UI
 
-Open LASO-Web and choose one of the registered pipelines. Describe the task in ordinary text; by default it is sent as the pipeline input field `prompt`. Pipelines may expect another input shape, so **Options · custom pipeline input** lets you enter the JSON object required by that pipeline. LASO-Web does not choose a pipeline automatically because LASO does not expose automatic pipeline selection.
+Choose **New chat**, select a registered LASO pipeline, and create a session. The URL `/sessions/<session-id>` identifies the durable LASO session and can be bookmarked or opened from another LASO-Web client connected to the same LASO deployment. Messages are submitted as idempotent session turns using the selected pipeline's `prompt` input. LASO runs sequentially and returns durable turns linked to run IDs; the UI shows run details secondarily. A pipeline requiring a different input schema should be adapted before using the chat composer.
 
-After LASO accepts a run, its workspace refreshes automatically every five seconds without repeatedly replacing unchanged content. Activity and technical details start collapsed, and remain available while keeping the returned result in focus. There is no fabricated progress percentage, generated worker narration, or streaming claim. Enter submits the task; Shift+Enter inserts a newline. If the pipeline requires another input schema, inspect its definition in LASO and use the advanced input option. The **Approvals** view submits decisions to LASO's durable approval/request endpoints; when a pending record has a matching run ID, it is also shown in that run. LASO remains authoritative for policy.
+LASO's session API has no title or rename field yet. The sidebar derives a display label from the first turn, with a pipeline/date fallback. LASO-Web deliberately does not save titles or transcripts locally. The page restores the latest ordered turn page from `GET /sessions/{id}/turns` on each load; **Load earlier turns** retrieves prior pages from LASO on demand.
+
+## Durable sessions and live updates
+
+LASO session IDs identify generic runtime sessions, not LASO-Web users or application accounts. Session turns and events are stored by LASO; the browser does not write authoritative transcript state to localStorage, and LASO-Web does not create a second conversation store. A second client using the same session ID reads the same ordered turn history and opens its own SSE connection to LASO.
+
+LASO-Web consumes `POST /api/v1/sessions`, `GET /api/v1/sessions`, `GET /api/v1/sessions/{id}`, `GET/POST /api/v1/sessions/{id}/turns`, and `GET /api/v1/sessions/{id}/events/stream`. LASO's SSE IDs are per-session monotonically increasing decimal sequence numbers; reconnects send `Last-Event-ID`, and replay may duplicate a delivery. The browser deduplicates by exact sequence cursor and refreshes the durable ordered turn list when events arrive. After a full page reload it safely replays from the beginning of the durable event journal. LASO currently streams lifecycle events, not generated text tokens; LASO-Web does not simulate token streaming. Temporary outages and LASO's `429 Retry-After` admission response cause reconnect with backoff.
+
+Current public LASO `main` exposes no capability-discovery endpoint. The Go adapter checks session API support by calling the real session-list endpoint and handles older LASO responses with a compatibility message. The page also requires the real SSE route. No feature is advertised based on a version number. Context generation and automatic reduction PRs are not required for basic durable turns and were not assumed; future context/run provenance can be surfaced from LASO once it is available upstream.
+
+LASO's current development identity is unauthenticated and does not enforce per-user session ownership. LASO-Web's optional Basic credential is a shared gateway password, not a user identity or membership policy. Anyone admitted to this web gateway who knows a session ID can access it. Keep LASO and LASO-Web private/loopback by default; remote access requires TLS, a strong web password, host allowlisting, and deployment-owned authorization around session IDs. The LASO bearer token remains only in Go server configuration. LASO-Web does not add accounts, session membership, or product authorization.
+
+After LASO accepts a standalone run, its workspace refreshes automatically every five seconds without repeatedly replacing unchanged content. Activity and technical details start collapsed, and remain available while keeping the returned result in focus. There is no fabricated progress percentage or generated worker narration. Enter submits the task; Shift+Enter inserts a newline. If the pipeline requires another input schema, inspect its definition in LASO and use the advanced input option. The **Approvals** view submits decisions to LASO's durable approval/request endpoints; when a pending record has a matching run ID, it is also shown in that run. LASO remains authoritative for policy.
 
 **Workers**, **Approvals**, **Schedules**, and **System** remain available from the secondary navigation. LASO-Web only exposes API operations that LASO actually supports; worker assignment, pipeline authoring, schedule editing, and artifact browsing are not invented in the UI.
 
-LASO's current local-development identity is unauthenticated. Therefore LASO-Web should be treated as an administrative console, not an internet-facing application. Keep both services on loopback/private network by default. For remote access, use a TLS reverse proxy, set a strong `LASO_WEB_PASSWORD`, and configure LASO's own supported identity/authorization before exposing sensitive operations. Do not bind LASO's unauthenticated development API publicly.
+LASO's current local-development identity is unauthenticated. Treat LASO-Web as a trusted-network client, not an internet-facing application. Keep both services on loopback/private network by default. For remote access, use a TLS reverse proxy, set a strong `LASO_WEB_PASSWORD`, and configure deployment-owned authorization before exposing session IDs or operational endpoints. Do not bind LASO's unauthenticated development API publicly.
 
 ## Linux production installation
 
-The service account needs read access to the application and its environment file; it does not need write access to the application tree. Example installation (review paths and account policy for the target machine):
+The legacy `laso-web.service` unit remains for the Python workspace. For durable session chat, build and install the Go binary and use `laso-web-go.service` instead. The Go service account needs read access to the binary and environment file; it does not need write access to the application tree:
 
 ```sh
 sudo groupadd --system laso-web
 sudo useradd --system --gid laso-web --home-dir /nonexistent --shell /usr/sbin/nologin laso-web
+go build -trimpath -o laso-web .
+sudo install -d -o root -g root -m 0755 /opt/laso-web
+sudo install -m 0755 laso-web /opt/laso-web/laso-web
+sudo install -m 0644 deploy/systemd/laso-web-go.service /etc/systemd/system/laso-web.service
+```
+
+Create `/etc/laso-web/laso-web.env` with `LASO_URL`, `LASO_WEB_BIND`, optional
+`LASO_WEB_PASSWORD`, `LASO_WEB_ALLOWED_HOSTS`, and `LASO_TOKEN`. Restrict the
+file (`root:laso-web`, mode `0640`). Enable the service with the systemd commands
+below. Keep the Go binary and LASO API loopback/private unless TLS and
+deployment-owned authorization protect remote use.
+
+For the compatibility Python service, the service account needs read access to the application and its environment file; it does not need write access to the application tree. Example installation (review paths and account policy for the target machine):
+
+```sh
 sudo install -d -o root -g root -m 0755 /opt/laso-web
 sudo install -d -o root -g root -m 0750 /etc/laso-web
 sudo install -m 0644 server.py run.sh /opt/laso-web/
@@ -89,6 +117,7 @@ sudo install -m 0644 -D static/index.html /opt/laso-web/static/index.html
 sudo install -m 0644 -D static/app.js /opt/laso-web/static/app.js
 sudo install -m 0644 -D static/model.js /opt/laso-web/static/model.js
 sudo install -m 0644 -D static/style.css /opt/laso-web/static/style.css
+sudo install -m 0644 -D static/sessions.js /opt/laso-web/static/sessions.js
 sudo install -m 0644 deploy/systemd/laso-web.service /etc/systemd/system/laso-web.service
 ```
 
@@ -115,13 +144,17 @@ Upstream requests time out after 8 seconds. Browser requests have a 10-second de
 
 ## Development and tests
 
-Node.js 22 is used only to run the dependency-free UI model tests; it is not required to run or deploy LASO-Web.
+Go 1.23+ builds and runs the session application without third-party modules. Node.js 22 is used only for browser model tests.
 
 ```sh
 python3 -m unittest discover -s tests -v
+go test ./...
+go test -race ./...
 node --test tests/test_ui_model.cjs
+node --test tests/test_session_model.cjs
 node --check static/model.js
 node --check static/app.js
+node --check static/session.js
 ```
 
 An optional real-server smoke test uses a temporary SQLite directory, registers the deterministic Hello pipeline, and creates/polls one run through LASO-Web's HTTP adapter:
@@ -130,8 +163,8 @@ An optional real-server smoke test uses a temporary SQLite directory, registers 
 python3 tests/integration_laso.py --server /path/to/laso-server --pipeline /path/to/LASO/examples/hello-pipeline/pipeline.yaml
 ```
 
-The test stops its temporary LASO server and removes its isolated data directory. Do not pass a private project or production database to this command.
+The run smoke stops its temporary LASO server and removes its isolated data directory. Do not pass a private project or production database to this command. `tests/integration_sessions.py` exercises session sharing through two independent Go frontend instances against a real LASO binary and an isolated SQLite directory.
 
 ## Known limitations
 
-This is an operator UI, not an identity provider, general API gateway, or full LASO client SDK. LASO's unauthenticated local identity means remote deployment requires explicit network controls and authentication at the web layer; the bundled Basic auth is intended to be used only over TLS. The application does not provide streaming updates, pipeline authoring, schedule editing, direct worker selection, artifact browsing, or new server-side authorization policy.
+This is an application client, not an identity provider or full LASO SDK. Session titles cannot be persisted or renamed with the current LASO API. Shared sessions have no per-user ACL until LASO/deployment identity and policy are configured. Session SSE reports execution events rather than token streaming. LASO-Web does not provide pipeline authoring, schedule editing, direct worker selection, artifact browsing, context reduction, or new LASO authorization policy.

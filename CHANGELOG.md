@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+* Add a Go LASO API adapter and durable session chat UI with session deep links,
+  ordered LASO turn history, idempotent turn submission, and replayable session
+  SSE. Preserve the existing Python run workspace as a compatibility path;
+  session titles and product identity remain LASO/application-layer work.
+
+
+## Unreleased
+
 * Refine run threads to foreground LASO's actual readable output, with lifecycle activity, duplicate/raw message data, and technical metadata progressively disclosed.
 * Keep polling updates from replacing unchanged thread content; preserve focused disclosures and add shareable/history-aware run routes that restore after refresh.
 * Simplify the task composer, remove duplicated recent-run cards, improve human-readable states and transient confirmations, and prevent horizontal overflow during responsive viewport changes.

@@ -10,13 +10,15 @@ LASO-Web
 LASO `/api/v1`
 ```
 
-LASO-Web is a separate Python standard-library process. It serves static assets and a narrow API adapter. The adapter maps UI requests to documented LASO endpoints and rejects arbitrary URLs, methods, and paths. It does not store orchestration state or reproduce LASO policy.
+LASO-Web is a separate application process that serves static assets and a narrow same-origin LASO API adapter. The Go server is the active durable-session client and embeds the static UI; the older Python server remains as a compatibility workspace. Both proxy to LASO and own no orchestration records. The adapter maps UI requests to documented LASO endpoints and rejects arbitrary URLs, methods, and paths. It does not store session history or reproduce LASO policy.
 
 The server-side hop prevents browser JavaScript from learning a configured upstream bearer token and avoids requiring cross-origin browser access from LASO. LASO-Web binds to loopback by default. A non-loopback bind requires an explicit password; remote deployments should also use TLS and a reverse proxy. Since LASO's local development identity is unauthenticated, network exposure must be considered carefully at both layers.
 
 ## Interface boundary
 
-The current UI consumes the existing health/version, pipelines, runs, run messages/events, approvals, workers, worker jobs, worker requests, and schedules API routes. It refreshes those records periodically; unchanged thread content is not re-rendered, so open activity/details and keyboard focus are not discarded on every poll. Run routes are encoded in the URL fragment so refresh and browser history can restore a selected run without adding a backend route. LASO-Web does not claim SSE/WebSocket streaming or fabricate progress. It does not invent worker assignment, worker health, artifact browsing, or schedule-edit routes. Worker choice remains part of the registered pipeline. LASO owns persistence, policy decisions, orchestration, and API validation; the browser merely renders and requests actions through those interfaces.
+The run/operator workspace consumes health/version, pipelines, runs, run messages/events, approvals, workers, worker jobs, worker requests, and schedules. It retains periodic refresh and stable run routes in the URL fragment. Durable chat uses LASO sessions as its only conversation identity and history: session list/create/get, ordered turn list/submit, and session event SSE. Stable routes at `/sessions/<id>` reload the same LASO session. Each browser opens its own LASO SSE stream; event cursors are sequence-based and replay-safe, and events trigger a reload of durable turns rather than local transcript construction. The Go adapter does not add a cross-client pub/sub layer.
+
+LASO-Web checks session support with a real session-list request because public LASO main does not currently publish capability discovery. The current Python compatibility service does not implement session routes; its UI leaves chat creation unavailable while retaining run/workspace operations. The Go session UI derives a display label from the first turn because LASO currently has no title/rename API. It shows the associated run ID as secondary execution detail. Neither UI invents worker assignment, worker health, artifact browsing, or schedule-edit routes. LASO owns persistence, policy decisions, orchestration, and API validation; the browser renders and submits requests through those interfaces.
 
 ## Request safety
 

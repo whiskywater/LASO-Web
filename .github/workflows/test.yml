@@ -8,6 +8,19 @@ permissions:
   contents: read
 
 jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+      - name: Format, vet, and test Go adapter
+        run: |
+          test -z "$(gofmt -l main.go internal/web/*.go)"
+          go vet ./...
+          go test ./...
+          go test -race ./...
   python:
     runs-on: ubuntu-latest
     strategy:
@@ -30,4 +43,8 @@ jobs:
         run: |
           node --check static/model.js
           node --check static/app.js
+          node --check static/sessions.js
+          node --check static/session-model.js
+          node --check static/session.js
           node --test tests/test_ui_model.cjs
+          node --test tests/test_session_model.cjs

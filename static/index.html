@@ -23,7 +23,12 @@
   <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
   <div class="app-shell">
     <aside id="sidebar" class="sidebar" aria-label="Workspace navigation">
-      <button id="new-task" class="new-task-button" type="button"><span aria-hidden="true">＋</span> New task</button>
+      <a id="new-chat-link" class="new-task-button hidden" href="/sessions/new"><span aria-hidden="true">＋</span> New chat</a>
+      <div id="sessions-sidebar" class="sidebar-section hidden">
+        <div class="section-label">SESSIONS</div>
+        <div id="recent-sessions" class="recent-runs"><p class="sidebar-empty">Checking LASO session support…</p></div>
+      </div>
+      <button id="new-task" class="new-task-button secondary-new-task" type="button"><span aria-hidden="true">＋</span> New task</button>
       <div class="sidebar-section">
         <div class="section-label">RECENT WORK</div>
         <div id="recent-runs" class="recent-runs"><p class="sidebar-empty">Your runs will appear here.</p></div>
@@ -45,5 +50,6 @@
   </div>
   <script src="/model.js" defer></script>
   <script src="/app.js" defer></script>
+  <script src="/sessions.js" defer></script>
 </body>
 </html>

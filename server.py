@@ -254,7 +254,7 @@ class Handler(BaseHTTPRequestHandler):
             content = (ROOT / "static" / "index.html").read_bytes()
             self._send(200, content, "text/html; charset=utf-8")
             return
-        if self.path in {"/app.js", "/model.js", "/style.css"}:
+        if self.path in {"/app.js", "/model.js", "/style.css", "/sessions.js"}:
             name = self.path[1:]
             kind = "text/javascript; charset=utf-8" if name.endswith(".js") else "text/css; charset=utf-8"
             self._send(200, (ROOT / "static" / name).read_bytes(), kind)
