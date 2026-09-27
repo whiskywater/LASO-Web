@@ -2,6 +2,7 @@
 """Two Go frontends share durable sessions through two PostgreSQL LASO servers."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import http.client
 import json
 import os
@@ -11,6 +12,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -80,7 +82,7 @@ def wait_for(url, processes, timeout=20):
     raise RuntimeError(f"service did not become ready: {url}")
 
 
-def read_one_sse_event(url, cursor):
+def read_one_sse_event(url, cursor, connected=None):
     parsed = urllib.parse.urlparse(url)
     conn = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5)
     headers = {"Accept": "text/event-stream"}
@@ -92,6 +94,8 @@ def read_one_sse_event(url, cursor):
         body = response.read().decode(errors="replace")
         conn.close()
         raise RuntimeError(f"session stream failed: HTTP {response.status}: {body}")
+    if connected is not None:
+        connected.set()
     frame = []
     while True:
         line = response.readline()
@@ -323,14 +327,28 @@ def main():
             sid = session["id"]
             status, from_b = request(api_b + f"/sessions/{sid}")
             assert status == 200 and from_b.get("id") == sid, from_b
+            status, session_list = request(api_b + "/sessions?limit=100&offset=0")
+            assert status == 200 and any(item.get("id") == sid for item in session_list), session_list
             status, deep_page = request(b + f"/sessions/{sid}")
             assert status == 200 and "session.js" in deep_page, deep_page
 
-            first_body = {"idempotency_key": "client-a-turn-1", "input": {"prompt": "first from A"}}
-            status, first = request(api_a + f"/sessions/{sid}/turns", "POST", first_body)
-            assert status == 202 and first.get("sequence") == 1, first
-            retry_status, retry = request(api_b + f"/sessions/{sid}/turns", "POST", first_body)
-            assert retry_status == 202 and retry.get("id") == first.get("id"), retry
+            status, journal = request(api_a + f"/sessions/{sid}/events?after=0&limit=100")
+            assert status == 200, journal
+            live_cursor = journal[-1]["sequence"] if journal else 0
+            stream_url = api_b + f"/sessions/{sid}/events/stream"
+            connected = threading.Event()
+            with ThreadPoolExecutor(max_workers=1) as streams:
+                live_future = streams.submit(read_one_sse_event, stream_url, live_cursor, connected)
+                if not connected.wait(timeout=10):
+                    raise RuntimeError("SSE stream did not become ready before turn submission")
+
+                first_body = {"idempotency_key": "client-a-turn-1", "input": {"prompt": "first from A"}}
+                status, first = request(api_a + f"/sessions/{sid}/turns", "POST", first_body)
+                assert status == 202 and first.get("sequence") == 1, first
+                retry_status, retry = request(api_b + f"/sessions/{sid}/turns", "POST", first_body)
+                assert retry_status == 202 and retry.get("id") == first.get("id"), retry
+                live_id, live_event = live_future.result(timeout=10)
+            assert live_id > live_cursor and live_event.get("turn_id") == first.get("id"), live_event
 
             deadline = time.monotonic() + 20
             history = []
@@ -345,8 +363,6 @@ def main():
             status, session_run = request(api_b + f"/runs/{run_id}")
             assert status == 200 and session_run.get("state") == "Completed", session_run
 
-            event_id, event = read_one_sse_event(api_b + f"/sessions/{sid}/events/stream", 0)
-            assert event_id >= 1 and event.get("type"), event
             status, journal = request(api_a + f"/sessions/{sid}/events?after=0&limit=100")
             assert status == 200 and journal, journal
             disconnect_cursor = journal[-1]["sequence"]
