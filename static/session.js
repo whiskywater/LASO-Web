@@ -7,7 +7,7 @@ const sessionID = (() => {
   catch { return ""; }
 })();
 let session = null, turns = [], pipelines = [], cursor = new window.LasoSessionModel.Cursor(), durableCursor = "0", closed = false, retryDelay = 500;
-let pendingTurn = null, submitting = false, sidebarSessions = [], draftMessage = "";
+let pendingTurn = null, submitting = false, closing = false, streamConnected = false, sidebarSessions = [], draftMessage = "";
 let latestOffset = 0, oldestLoadedOffset = 0, moreOlder = false, sessionTitle = "";
 const status = (message = "", state = "live") => {
   const node = $("#chat-status");
@@ -118,11 +118,13 @@ function renderThread() {
     close.addEventListener("click", async () => {
       if (submitting || session.state !== "open" || !window.confirm("Close this LASO session? Its history will remain available, but no more turns can be submitted.")) return;
       close.disabled = true; status("Closing LASO session…", "submitting");
+      closing = true;
       try {
         await api(`/api/laso/sessions/${encodeURIComponent(session.id)}/close`, { method: "POST", body: "{}" });
         session = await api(`/api/laso/sessions/${encodeURIComponent(session.id)}`);
-        closed = true; await loadTurns(); renderThread(); sidebarSessions = []; await populateSidebar(); status("Session closed. Its history remains available.", "closed");
+        closed = true; streamConnected = false; await loadTurns(); renderThread(); sidebarSessions = []; await populateSidebar(); status("Session closed. Its history remains available.", "closed");
       } catch (error) { status(`Could not close session: ${error.message}`, "error"); close.disabled = false; }
+      finally { closing = false; }
     });
     wrap.append(close);
   } else {
@@ -192,8 +194,13 @@ function scheduleReload() {
       await loadLatestTurns(); renderThread(); sidebarSessions = []; await populateSidebar();
       if (BigInt(through) > BigInt(durableCursor)) durableCursor = through;
       if (BigInt(cursor.header() || "0") < BigInt(durableCursor)) cursor = new window.LasoSessionModel.Cursor(durableCursor);
+      if (streamConnected && !submitting && !closing && session?.state === "open") status("Caught up · session history is current.", "caught-up");
     }
-    catch (error) { status(`LASO is temporarily disconnected. Retrying durable history shortly. ${error.message}`, "reconnecting"); reloadTimer = setTimeout(() => { reloadTimer = 0; scheduleReload(); }, 1000); }
+    catch (error) {
+      const unavailable = [502, 503, 504].includes(error.status);
+      status(unavailable ? "LASO is temporarily unavailable. Retrying durable history; saved history remains available." : `LASO is temporarily disconnected. Retrying durable history shortly. ${error.message}`, unavailable ? "unavailable" : "reconnecting");
+      reloadTimer = setTimeout(() => { reloadTimer = 0; scheduleReload(); }, 1000);
+    }
   }, 100);
 }
 async function streamLoop() {
@@ -205,9 +212,9 @@ async function streamLoop() {
       if (!response.ok || !response.body || !response.headers.get("Content-Type")?.startsWith("text/event-stream")) {
         const body = await response.text(); let detail = ""; try { detail = JSON.parse(body).error || ""; } catch {}
         if (response.status === 404 || response.status === 405) { compatibility("This LASO server does not support session event streaming. Upgrade LASO to a build with durable session SSE."); return; }
-        const err = new Error(detail || `LASO event stream unavailable (${response.status}).`); err.retryAfter = Number(response.headers.get("Retry-After") || 0); throw err;
+        const err = new Error(detail || `LASO event stream unavailable (${response.status}).`); err.status = response.status; err.retryAfter = Number(response.headers.get("Retry-After") || 0); throw err;
       }
-      retryDelay = 500; status("Live · connected to LASO session events.", "live");
+      retryDelay = 500; streamConnected = true; status("Live · connected to LASO session events.", "live"); scheduleReload();
       const reader = response.body.getReader(), decoder = new TextDecoder(); let buffer = "";
       while (!closed) {
         const { value, done } = await reader.read(); if (done) break;
@@ -222,7 +229,7 @@ async function streamLoop() {
           if (parsed.event?.type === "session.closed") {
             try { session = await api(`/api/laso/sessions/${encodeURIComponent(session.id)}`); await loadTurns(); }
             catch { session.state = "closed"; }
-            closed = true; renderThread(); sidebarSessions = []; await populateSidebar(); status("Session closed. Its history remains available.", "closed"); break;
+            closed = true; streamConnected = false; renderThread(); sidebarSessions = []; await populateSidebar(); status("Session closed. Its history remains available.", "closed"); break;
           }
         }
         if (buffer.length > 4 * 1024 * 1024) { await reader.cancel(); throw new Error("LASO event exceeded the 4 MiB frame limit."); }
@@ -230,15 +237,17 @@ async function streamLoop() {
       if (!closed) {
         try {
           const latest = await api(`/api/laso/sessions/${encodeURIComponent(session.id)}`);
-          if (latest.state === "closed") { session = latest; await loadTurns(); renderThread(); closed = true; break; }
+          if (latest.state === "closed") { session = latest; await loadTurns(); renderThread(); closed = true; streamConnected = false; status("Session closed. Its history remains available.", "closed"); break; }
         } catch {}
         throw new Error("LASO event stream ended; reconnecting.");
       }
     } catch (error) {
       if (closed) break;
+      streamConnected = false;
       if (durableCursor !== cursor.header()) cursor = new window.LasoSessionModel.Cursor(durableCursor);
       const wait = Math.max(error.retryAfter * 1000, retryDelay);
-      status(`Reconnecting to LASO in ${Math.ceil(wait / 1000)}s. Your durable history remains available.`, "reconnecting"); await new Promise(resolve => setTimeout(resolve, wait)); retryDelay = Math.min(retryDelay * 2, 15000);
+      const unavailable = [502, 503, 504].includes(error.status);
+      status(unavailable ? "LASO is temporarily unavailable. Retrying the session connection; saved history remains available." : `Reconnecting to LASO in ${Math.ceil(wait / 1000)}s. Your durable history remains available.`, unavailable ? "unavailable" : "reconnecting"); await new Promise(resolve => setTimeout(resolve, wait)); retryDelay = Math.min(retryDelay * 2, 15000);
     }
   }
 }

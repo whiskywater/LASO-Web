@@ -1,1 +1,5 @@
 .session-item[data-state=closed]{color:var(--muted);background:#1b252a}
+.chat-status{min-height:2.5rem;padding:.5rem 1rem;border-bottom:1px solid #33434a;color:#9aabb2}
+.chat-status[data-state=live],.chat-status[data-state=caught-up]{color:#77d0a5}
+.chat-status[data-state=reconnecting],.chat-status[data-state=unavailable],.chat-status[data-state=error]{color:#e7b765}
+.chat-status[data-state=closed]{color:#9aabb2}

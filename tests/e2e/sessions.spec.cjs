@@ -59,8 +59,12 @@ async function createSession(page, webURL = stack.webURLs[0]) {
   await page.getByRole("button", { name: "Create session" }).click();
   await expect(page).toHaveURL(/\/sessions\/[A-Za-z0-9_.@-]+$/);
   await expect(page.getByTestId("message-composer")).toBeVisible();
-  await expect(page.getByTestId("chat-status")).toHaveAttribute("data-state", "live");
+  await expect(page.getByTestId("chat-status")).toHaveAttribute("data-state", "caught-up", { timeout: 15_000 });
   return page.url();
+}
+
+async function expectLiveOrCaughtUp(page) {
+  await expect(page.getByTestId("chat-status")).toHaveAttribute("data-state", /^(live|caught-up)$/);
 }
 
 test("two browser clients share durable ordered turns and recover through SSE replay and LASO restart", async ({ browser }) => {
@@ -68,7 +72,7 @@ test("two browser clients share durable ordered turns and recover through SSE re
   const sessionURL = await createSession(a.page);
   const clientURLB = `${stack.webURLs[1]}${new URL(sessionURL).pathname}`;
   const b = await client(browser, clientURLB);
-  await expect(b.page.getByTestId("chat-status")).toHaveAttribute("data-state", "live");
+  await expect(b.page.getByTestId("chat-status")).toHaveAttribute("data-state", "caught-up", { timeout: 15_000 });
   await expect(b.page.locator("#session-list a[aria-current=page]")).toHaveCount(1);
   const sessionID = new URL(sessionURL).pathname.split("/").at(-1);
 
@@ -107,18 +111,19 @@ test("two browser clients share durable ordered turns and recover through SSE re
   await expect(b.page.getByTestId("user-turn")).toHaveCount(3);
   await expect(b.page.getByTestId("user-turn").nth(2)).toContainText("third turn while browser B is offline");
 
+  await expect(b.page.getByTestId("chat-status")).toHaveAttribute("data-state", "caught-up", { timeout: 15_000 });
   const refresh = await client(browser, clientURLB);
   await expect(refresh.page.getByTestId("user-turn")).toHaveCount(3);
-  await expect(refresh.page.getByTestId("chat-status")).toHaveAttribute("data-state", "live");
+  await expect(refresh.page.getByTestId("chat-status")).toHaveAttribute("data-state", "caught-up", { timeout: 15_000 });
 
   await stack.stopLaso();
-  await expect(a.page.getByTestId("chat-status")).toHaveAttribute("data-state", "reconnecting", { timeout: 15_000 });
+  await expect(a.page.getByTestId("chat-status")).toHaveAttribute("data-state", /^(reconnecting|unavailable)$/, { timeout: 15_000 });
   await stack.restartLaso();
-  await expect(a.page.getByTestId("chat-status")).toHaveAttribute("data-state", "live", { timeout: 30_000 });
+  await expectLiveOrCaughtUp(a.page);
   await refresh.page.reload();
   await expect(refresh.page.getByTestId("user-turn")).toHaveCount(3);
   await expect(refresh.page).toHaveURL(clientURLB);
-  await expect(refresh.page.getByTestId("chat-status")).toHaveAttribute("data-state", "live");
+  await expect(refresh.page.getByTestId("chat-status")).toHaveAttribute("data-state", "caught-up", { timeout: 15_000 });
 
   a.page.once("dialog", dialog => dialog.accept());
   await a.page.getByTestId("close-session").click();
