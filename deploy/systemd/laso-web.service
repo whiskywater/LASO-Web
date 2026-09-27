@@ -1,6 +1,7 @@
 [Unit]
-Description=LASO-Web operator interface
-After=network.target
+Description=LASO-Web Go client for LASO sessions and run operations
+After=network.target laso.service
+Wants=laso.service
 
 [Service]
 Type=simple
@@ -8,9 +9,9 @@ User=laso-web
 Group=laso-web
 WorkingDirectory=/opt/laso-web
 EnvironmentFile=-/etc/laso-web/laso-web.env
-ExecStart=/usr/bin/python3 /opt/laso-web/server.py
+ExecStart=/opt/laso-web/laso-web
 Restart=on-failure
-RestartSec=3s
+RestartSec=3
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

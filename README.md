@@ -8,7 +8,7 @@ The architecture is intentionally simple:
 Browser → LASO-Web (same-origin adapter) → LASO sessions, turns, runs and SSE
 ```
 
-The Go server is the session-chat path and serves embedded static assets. It keeps LASO credentials server-side, validates a strict API route allowlist, and proxies each client's SSE stream to LASO. It adds no conversation database, transcript cache, or process-local pub/sub. The older Python workspace remains available as a compatibility path; it does not implement session chat.
+The Go server serves the complete application, including the run/operator workspace and durable-session chat. It keeps LASO credentials server-side, validates a strict API route allowlist, and proxies each client's SSE stream to LASO. It adds no conversation database, transcript cache, or process-local pub/sub. Python is not used by the production server or launcher.
 
 The workspace and run-thread screenshots use a safe deterministic Hello-pipeline fixture:
 
@@ -31,11 +31,13 @@ Based on LASO's published `/api/v1` interface (see its [API reference](https://g
 * contextual pending approvals/worker requests on their associated run, plus a full decision queue;
 * read-only schedule listing and a secondary system-status view.
 
+The complete application runs through the Go backend. See [the migration and API coverage notes](docs/go-backend.md) for the retained Python server behavior and its Go implementation.
+
 LASO assigns workers through pipeline definitions; it does not expose a separate operator API for changing worker assignments, so this UI does not invent one. Schedule listing is supported, but schedule editing is not included in this release. Artifact listing/browsing, worker-specific health probes, and configuration editing are omitted because the current HTTP interface does not provide those GUI operations. Durable sessions use LASO's session SSE stream; the run/operator workspace continues to refresh its run-specific panels periodically. LASO exposes no CORS headers; same-origin proxying is used instead.
 
 ## Requirements and quick start
 
-Requirements: Go 1.23 or newer and a reachable LASO HTTP API for the Go application. Python 3.10+ remains required only for the compatibility server and its tests.
+Requirements: Go 1.23 or newer and a reachable LASO HTTP API. Node.js 22 is only needed to run the browser model tests. The optional real-LASO integration harnesses use Python 3 but are not needed to build or operate the server.
 
 ```sh
 git clone https://github.com/whiskywater/LASO-Web.git
@@ -43,9 +45,9 @@ cd LASO-Web
 ./run.sh
 ```
 
-When Go is installed, `run.sh` starts the Go server. If Go is absent it starts the legacy Python workspace, which reports that durable sessions are unavailable. The Go server reads a simple `.env` file with `KEY=value` lines and comments; it does not execute shell syntax or expand variables. Process environment values take precedence. The default connects to LASO at `http://127.0.0.1:8080` and serves `http://127.0.0.1:8081`.
+`run.sh` starts the Go server and reports a clear error if Go is missing. The server reads a simple `.env` file with `KEY=value` lines and comments; it does not execute shell syntax or expand variables. Process environment values take precedence. The default connects to LASO at `http://127.0.0.1:8080` and serves `http://127.0.0.1:8081`.
 
-Build a standalone Go binary with `go build -trimpath -o laso-web .`. To explicitly use the legacy Python server, run `python3 server.py`.
+Build a standalone Go binary with `go build -trimpath -o laso-web .`.
 
 Configure explicitly without a file:
 
@@ -90,7 +92,7 @@ LASO's current local-development identity is unauthenticated. Treat LASO-Web as 
 
 ## Linux production installation
 
-The legacy `laso-web.service` unit remains for the Python workspace. For durable session chat, build and install the Go binary and use `laso-web-go.service` instead. The Go service account needs read access to the binary and environment file; it does not need write access to the application tree:
+Build and install the Go binary and the `laso-web.service` unit. The service account needs read access to the binary and environment file; it does not need write access to the application tree:
 
 ```sh
 sudo groupadd --system laso-web
@@ -98,7 +100,7 @@ sudo useradd --system --gid laso-web --home-dir /nonexistent --shell /usr/sbin/n
 go build -trimpath -o laso-web .
 sudo install -d -o root -g root -m 0755 /opt/laso-web
 sudo install -m 0755 laso-web /opt/laso-web/laso-web
-sudo install -m 0644 deploy/systemd/laso-web-go.service /etc/systemd/system/laso-web.service
+sudo install -m 0644 deploy/systemd/laso-web.service /etc/systemd/system/laso-web.service
 ```
 
 Create `/etc/laso-web/laso-web.env` with `LASO_URL`, `LASO_WEB_BIND`, optional
@@ -106,20 +108,6 @@ Create `/etc/laso-web/laso-web.env` with `LASO_URL`, `LASO_WEB_BIND`, optional
 file (`root:laso-web`, mode `0640`). Enable the service with the systemd commands
 below. Keep the Go binary and LASO API loopback/private unless TLS and
 deployment-owned authorization protect remote use.
-
-For the compatibility Python service, the service account needs read access to the application and its environment file; it does not need write access to the application tree. Example installation (review paths and account policy for the target machine):
-
-```sh
-sudo install -d -o root -g root -m 0755 /opt/laso-web
-sudo install -d -o root -g root -m 0750 /etc/laso-web
-sudo install -m 0644 server.py run.sh /opt/laso-web/
-sudo install -m 0644 -D static/index.html /opt/laso-web/static/index.html
-sudo install -m 0644 -D static/app.js /opt/laso-web/static/app.js
-sudo install -m 0644 -D static/model.js /opt/laso-web/static/model.js
-sudo install -m 0644 -D static/style.css /opt/laso-web/static/style.css
-sudo install -m 0644 -D static/sessions.js /opt/laso-web/static/sessions.js
-sudo install -m 0644 deploy/systemd/laso-web.service /etc/systemd/system/laso-web.service
-```
 
 Create `/etc/laso-web/laso-web.env` with deployment-specific values, for example `LASO_URL=http://127.0.0.1:8080` and `LASO_WEB_BIND=127.0.0.1`. Restrict the file (`root:laso-web`, mode `0640`). Put optional credentials there rather than in the repository. Then:
 
@@ -132,7 +120,7 @@ journalctl -u laso-web
 
 Upgrade by installing the new tracked application files into `/opt/laso-web`, then run `sudo systemctl restart laso-web`. No LASO-Web database or migration is involved.
 
-The example unit runs as the unprivileged `laso-web` account, restarts on failure, has no writable application directory, and enables standard systemd filesystem/kernel/process hardening. Check local Python distribution paths before using a custom Python installation.
+The example unit runs as the unprivileged `laso-web` account, restarts on failure, has no writable application directory, and enables standard systemd filesystem/kernel/process hardening.
 
 ## Optional reverse proxies
 
@@ -144,26 +132,30 @@ Upstream requests time out after 8 seconds. Browser requests have a 10-second de
 
 ## Development and tests
 
-Go 1.23+ builds and runs the session application without third-party modules. Node.js 22 is used only for browser model tests.
+Go 1.23+ builds and runs the complete application without third-party modules. Node.js 22 is used only for browser model tests. Python is used only by optional real-LASO integration harnesses.
 
 ```sh
-python3 -m unittest discover -s tests -v
+gofmt -w main.go internal/web/*.go
+go vet ./...
 go test ./...
 go test -race ./...
+go build -trimpath -o laso-web .
 node --test tests/test_ui_model.cjs
 node --test tests/test_session_model.cjs
 node --check static/model.js
 node --check static/app.js
+node --check static/sessions.js
 node --check static/session.js
 ```
 
-An optional real-server smoke test uses a temporary SQLite directory, registers the deterministic Hello pipeline, and creates/polls one run through LASO-Web's HTTP adapter:
+Optional real-server integration tests use temporary SQLite data directories and exercise the Go binary against LASO:
 
 ```sh
-python3 tests/integration_laso.py --server /path/to/laso-server --pipeline /path/to/LASO/examples/hello-pipeline/pipeline.yaml
+python3 tests/integration_laso.py --server /path/to/laso-server --web /path/to/laso-web --pipeline /path/to/LASO/examples/hello-pipeline/pipeline.yaml --approval-pipeline /path/to/LASO/examples/human-approval/pipeline.yaml
+python3 tests/integration_sessions.py --server /path/to/laso-server --web /path/to/laso-web --pipeline /path/to/LASO/examples/hello-pipeline/pipeline.yaml
 ```
 
-The run smoke stops its temporary LASO server and removes its isolated data directory. Do not pass a private project or production database to this command. `tests/integration_sessions.py` exercises session sharing through two independent Go frontend instances against a real LASO binary and an isolated SQLite directory.
+The scripts start isolated LASO services and stop their processes/remove their temporary data directories. They invoke only the Go LASO-Web binary; Python is an optional test-harness runtime, never a production dependency. Do not pass a private project or production database to these commands.
 
 ## Known limitations
 

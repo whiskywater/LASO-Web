@@ -77,9 +77,9 @@ context. LASO owns provider continuation and any future context reduction.
 
 ## Running the Go application
 
-Go 1.23 or newer is required. `./run.sh` prefers Go when installed and falls
-back to the Python compatibility workspace otherwise. To build/deploy an
-immutable binary:
+Go 1.23 or newer is required. `./run.sh` starts the Go application and fails
+with an installation message if Go is unavailable. The same Go server hosts
+the run/operator workspace and sessions. To build/deploy an immutable binary:
 
 ```sh
 go test ./...
@@ -88,13 +88,11 @@ go build -trimpath -o laso-web .
 LASO_URL=http://127.0.0.1:8080 LASO_WEB_BIND=127.0.0.1 ./laso-web
 ```
 
-The existing `deploy/systemd/laso-web.service` still runs the Python
-compatibility server. `deploy/systemd/laso-web-go.service` is the Go unit
-example. Configuration variables are the same, including the server-only
-`LASO_TOKEN`, exact allowed-host list, loopback default, and the requirement
-for a strong password plus host allowlist on non-loopback binds. Use TLS in a
-reverse proxy for Basic authentication. Do not publish the bearer token to
-frontend responses.
+`deploy/systemd/laso-web.service` runs the Go binary. Configuration includes
+the server-only `LASO_TOKEN`, exact allowed-host list, loopback default, and the
+requirement for a strong password plus host allowlist on non-loopback binds.
+Use TLS in a reverse proxy for Basic authentication. Do not publish the bearer
+token to frontend responses.
 
 ## Known API and product limitations
 

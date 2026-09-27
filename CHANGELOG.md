@@ -3,9 +3,9 @@
 ## Unreleased
 
 * Add a Go LASO API adapter and durable session chat UI with session deep links,
-  ordered LASO turn history, idempotent turn submission, and replayable session
-  SSE. Preserve the existing Python run workspace as a compatibility path;
-  session titles and product identity remain LASO/application-layer work.
+  ordered LASO turn history, idempotent turn submission, replayable session SSE,
+  and the existing run/operator workspace. Python is no longer part of the
+  production server; session titles and product identity remain application work.
 
 
 ## Unreleased
