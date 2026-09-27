@@ -4,19 +4,42 @@
 import argparse
 import json
 import os
+import random
+import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 
 def free_port():
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+    dynamic_start, dynamic_end = 32768, 60999
+    try:
+        dynamic_start, dynamic_end = map(
+            int, Path("/proc/sys/net/ipv4/ip_local_port_range").read_text().split()
+        )
+    except OSError:
+        pass
+    ranges = []
+    if dynamic_start > 20000:
+        ranges.append((20000, min(dynamic_start - 1, 65000)))
+    if dynamic_end < 65000:
+        ranges.append((max(dynamic_end + 1, 20000), 65000))
+    candidates = [port for lower, upper in ranges for port in range(lower, upper + 1)]
+    random.shuffle(candidates)
+    for port in candidates:
+        try:
+            with socket.socket() as sock:
+                sock.bind(("127.0.0.1", port))
+            return port
+        except OSError:
+            continue
+    raise RuntimeError("no non-ephemeral loopback listener port is available")
 
 
 def request(url, method="GET", body=None, timeout=4):
@@ -68,6 +91,11 @@ def main():
     parser.add_argument("--web", required=True, help="Path to built LASO-Web Go binary")
     parser.add_argument("--pipeline", required=True, help="Path to deterministic hello pipeline YAML")
     parser.add_argument("--approval-pipeline", required=True, help="Path to human-approval pipeline YAML")
+    parser.add_argument(
+        "--postgres-dsn",
+        default=os.environ.get("LASO_TEST_POSTGRES_DSN", os.environ.get("LASO_POSTGRES_DSN", "")),
+        help="PostgreSQL connection string (or LASO_TEST_POSTGRES_DSN)",
+    )
     args = parser.parse_args()
     binary, web_binary, pipeline, approval_pipeline = map(
         lambda value: Path(value).resolve(),
@@ -75,30 +103,64 @@ def main():
     )
     if not all(path.is_file() for path in (binary, web_binary, pipeline, approval_pipeline)):
         raise SystemExit("LASO server, Go LASO-Web binary, or pipeline fixture does not exist")
+    if not args.postgres_dsn:
+        raise SystemExit("PostgreSQL DSN is required via --postgres-dsn or LASO_TEST_POSTGRES_DSN")
+    if shutil.which("psql") is None:
+        raise SystemExit("psql is required to isolate and clean the PostgreSQL test schema")
 
     processes = []
+    logs = []
+    schema = "laso_web_smoke_" + uuid.uuid4().hex[:16]
     with tempfile.TemporaryDirectory(prefix="laso-web-go-parity-") as directory:
         root = Path(directory)
         api_port, web_port = free_port(), free_port()
         config = root / "laso.yaml"
+        psql = subprocess.run(
+            ["psql", args.postgres_dsn, "-v", "ON_ERROR_STOP=1", "-c", f'CREATE SCHEMA "{schema}"'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if psql.returncode:
+            raise SystemExit("could not create isolated PostgreSQL schema")
         config.write_text(
+            f"postgres_dsn: {json.dumps(args.postgres_dsn)}\n"
+            f"postgres_schema: {schema}\n"
             f"data_dir: {json.dumps(str(root / 'state'))}\n"
             f"artifact_root: {json.dumps(str(root / 'state' / 'artifacts'))}\n"
-            "storage_backend: sqlite\napi_host: 127.0.0.1\n"
-            f"api_port: {api_port}\nworkers: 1\n", encoding="utf-8")
+            "api_host: 127.0.0.1\n"
+            f"api_port: {api_port}\nworkers: 1\n",
+            encoding="utf-8",
+        )
+        config.chmod(0o600)
         api_url = f"http://127.0.0.1:{api_port}"
         env = os.environ.copy()
-        laso = subprocess.Popen([str(binary), "--config", str(config), "--host", "127.0.0.1", "--port", str(api_port)],
-                                cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL, env=env)
+        core_log = (root / "laso.log").open("ab")
+        web_log = (root / "laso-web.log").open("ab")
+        logs.extend(((root / "laso.log", core_log), (root / "laso-web.log", web_log)))
+        laso = subprocess.Popen(
+            [str(binary), "--config", str(config)],
+            cwd=root,
+            stdin=subprocess.DEVNULL,
+            stdout=core_log,
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
         processes.append(laso)
         try:
             wait_for(api_url + "/api/v1/health", processes)
             web_env = env.copy()
             web_env.update({"LASO_URL": api_url, "LASO_WEB_BIND": "127.0.0.1", "LASO_WEB_PORT": str(web_port),
                             "LASO_WEB_PASSWORD": "", "LASO_WEB_ALLOWED_HOSTS": "", "LASO_TOKEN": ""})
-            web = subprocess.Popen([str(web_binary)], cwd=root, stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=web_env)
+            web = subprocess.Popen(
+                [str(web_binary)],
+                cwd=root,
+                stdin=subprocess.DEVNULL,
+                stdout=web_log,
+                stderr=subprocess.STDOUT,
+                env=web_env,
+            )
             processes.append(web)
             web_url = f"http://127.0.0.1:{web_port}"
             wait_for(web_url + "/", processes)
@@ -170,9 +232,14 @@ def main():
             stop(laso)
             status, unavailable = request(web_url + "/api/laso/health")
             assert status == 502 and isinstance(unavailable, dict), (status, unavailable)
-            restarted = subprocess.Popen([str(binary), "--config", str(config), "--host", "127.0.0.1", "--port", str(api_port)],
-                                         cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                         stderr=subprocess.DEVNULL, env=env)
+            restarted = subprocess.Popen(
+                [str(binary), "--config", str(config)],
+                cwd=root,
+                stdin=subprocess.DEVNULL,
+                stdout=core_log,
+                stderr=subprocess.STDOUT,
+                env=env,
+            )
             processes[0] = restarted
             wait_for(api_url + "/api/v1/health", processes)
             status, recovered = request(web_url + "/api/laso/health")
@@ -181,6 +248,22 @@ def main():
         finally:
             for process in reversed(processes):
                 stop(process)
+            for _, log in logs:
+                log.close()
+            psql = subprocess.run(
+                ["psql", args.postgres_dsn, "-v", "ON_ERROR_STOP=1", "-c", f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            if psql.returncode:
+                print("WARNING: could not drop isolated PostgreSQL schema", file=sys.stderr)
+            if sys.exc_info()[0] is not None:
+                for log_path, _ in logs:
+                    if log_path.exists():
+                        print(f"--- {log_path.name} ---", file=sys.stderr)
+                        print(log_path.read_text(errors="replace"), file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -42,9 +42,9 @@ The interface keeps the same limits as the Python adapter: request JSON is
 capped at 1 MiB, LASO responses at 4 MiB, normal API requests have an 8-second
 upstream timeout, and redirects are not followed. Session SSE uses a separate
 streaming transport and is canceled when the browser connection closes. The
-operator UI currently lists schedules but does not create or edit them. A new
-SQLite test instance has no configured worker records; the workers/jobs views
-are verified against the real API's empty-list result.
+operator UI currently lists schedules but does not create or edit them. The
+PostgreSQL integration fixtures verify workers/jobs views against the real API's
+empty-list result.
 
 ## Production startup
 
@@ -56,6 +56,6 @@ is sent only from the server to LASO.
 
 The end-to-end harnesses in `tests/integration_laso.py` and
 `tests/integration_sessions.py` are test tools, not runtime dependencies. They
-create isolated SQLite state and start two Go frontends for the shared-session
-exercise. PostgreSQL deployment behavior remains owned by LASO and was not
-validated by this migration.
+use isolated PostgreSQL schemas. The session exercise runs two LASO servers and
+two Go frontends against the same database-backed session, including recovery
+after one LASO server restarts.

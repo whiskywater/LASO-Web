@@ -107,7 +107,7 @@ token to frontend responses.
   advertisement.
 * Context generation/automatic reduction APIs on open LASO PRs are not treated
   as present. They remain runtime-owned work.
-* The two-client test verifies independent Go frontends against one durable API
-  fixture; the opt-in real LASO integration script exercises the actual LASO
-  server and SQLite. Production multi-process sharing requires LASO's
-  PostgreSQL mode and deployment authorization configured for that deployment.
+* The opt-in real LASO integration script uses an isolated PostgreSQL schema
+  and two backend/frontend processes to verify shared sessions, turn history,
+  SSE replay, and backend restart recovery. Production access control still
+  requires deployment-owned identity and authorization policy.

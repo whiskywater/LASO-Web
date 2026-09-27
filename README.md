@@ -148,14 +148,14 @@ node --check static/sessions.js
 node --check static/session.js
 ```
 
-Optional real-server integration tests use temporary SQLite data directories and exercise the Go binary against LASO:
+Optional real-server integration tests use an isolated PostgreSQL schema and exercise the Go binary against PostgreSQL-backed LASO. Set `LASO_TEST_POSTGRES_DSN` to a disposable test database connection string first:
 
 ```sh
 python3 tests/integration_laso.py --server /path/to/laso-server --web /path/to/laso-web --pipeline /path/to/LASO/examples/hello-pipeline/pipeline.yaml --approval-pipeline /path/to/LASO/examples/human-approval/pipeline.yaml
 python3 tests/integration_sessions.py --server /path/to/laso-server --web /path/to/laso-web --pipeline /path/to/LASO/examples/hello-pipeline/pipeline.yaml
 ```
 
-The scripts start isolated LASO services and stop their processes/remove their temporary data directories. They invoke only the Go LASO-Web binary; Python is an optional test-harness runtime, never a production dependency. Do not pass a private project or production database to these commands.
+The scripts start isolated LASO services, use separate per-process state directories, and drop their test schema on completion. The session test starts two PostgreSQL LASO processes and two Go frontends. They invoke only the Go LASO-Web binary; Python and `psql` are optional test-harness requirements, never production dependencies. Do not pass a private project or production database to these commands.
 
 ## Known limitations
 
