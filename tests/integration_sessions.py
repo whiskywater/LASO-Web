@@ -189,7 +189,30 @@ def main():
             assert replay_id > disconnect_cursor and replay_event.get("turn_id") == second.get("id"), replay_event
             status, from_a = request(a + f"/api/laso/sessions/{sid}/turns?limit=100&offset=0")
             assert status == 200 and [turn.get("sequence") for turn in from_a] == [1, 2], from_a
-            print(f"PASS: standalone run {standalone['id']} plus two Go clients sharing LASO session {sid}; idempotency, turn/run linkage, ordered history, deep link, SSE replay cursor {disconnect_cursor}->{replay_id}")
+
+            # Wait for durable completion, stop LASO, verify the adapter fails
+            # boundedly, then restart LASO against the same SQLite directory.
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                status, from_a = request(a + f"/api/laso/sessions/{sid}/turns?limit=100&offset=0")
+                if from_a[-1].get("state") in {"succeeded", "failed", "cancelled"}:
+                    break
+                time.sleep(0.1)
+            assert status == 200 and from_a[-1].get("state") == "succeeded", from_a
+            stop(laso)
+            status, outage = request(b + f"/api/laso/sessions/{sid}")
+            assert status == 502 and isinstance(outage, dict), (status, outage)
+
+            laso = subprocess.Popen([str(binary), "--config", str(config), "--host", "127.0.0.1", "--port", str(api_port)],
+                                    cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, env=env)
+            processes[0] = laso
+            wait_for(api_url + "/api/v1/health", processes)
+            status, replay_after_restart = read_one_sse_event(b + f"/api/laso/sessions/{sid}/events/stream", disconnect_cursor)
+            assert status > disconnect_cursor and replay_after_restart.get("turn_id") == second.get("id"), replay_after_restart
+            status, recovered = request(b + f"/api/laso/sessions/{sid}/turns?limit=100&offset=0")
+            assert status == 200 and [turn.get("sequence") for turn in recovered] == [1, 2], recovered
+            print(f"PASS: two Go clients share LASO session {sid}; idempotency, linkage, ordered history, deep link, SSE reconnect/replay cursor {disconnect_cursor}->{replay_id}, outage recovery, LASO restart replay")
         finally:
             for process in reversed(processes):
                 stop(process)

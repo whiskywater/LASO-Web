@@ -265,6 +265,90 @@ func TestRouteValidation(t *testing.T) {
 	}
 }
 
+func TestPythonWorkspaceRouteParity(t *testing.T) {
+	valid := []struct {
+		method, path string
+		stream       bool
+	}{
+		{http.MethodGet, "/api/v1/health", false},
+		{http.MethodGet, "/api/v1/version", false},
+		{http.MethodGet, "/api/v1/pipelines?limit=100&offset=0", false},
+		{http.MethodPost, "/api/v1/pipelines", false},
+		{http.MethodGet, "/api/v1/pipelines/hello@1", false},
+		{http.MethodPost, "/api/v1/pipelines/hello@1/runs", false},
+		{http.MethodGet, "/api/v1/runs?limit=100&offset=0", false},
+		{http.MethodGet, "/api/v1/runs/run-1", false},
+		{http.MethodGet, "/api/v1/runs/run-1/messages", false},
+		{http.MethodGet, "/api/v1/runs/run-1/events", false},
+		{http.MethodGet, "/api/v1/runs/run-1/attempts", false},
+		{http.MethodPost, "/api/v1/runs/run-1/cancel", false},
+		{http.MethodPost, "/api/v1/runs/run-1/resume", false},
+		{http.MethodGet, "/api/v1/workers?limit=100&offset=0", false},
+		{http.MethodGet, "/api/v1/worker-jobs?limit=100&offset=0", false},
+		{http.MethodGet, "/api/v1/worker-jobs/job-1", false},
+		{http.MethodPost, "/api/v1/worker-jobs/job-1/cancel", false},
+		{http.MethodGet, "/api/v1/approvals?limit=100&offset=0", false},
+		{http.MethodGet, "/api/v1/approvals/approval-1", false},
+		{http.MethodPost, "/api/v1/approvals/approval-1/approve", false},
+		{http.MethodPost, "/api/v1/approvals/approval-1/reject", false},
+		{http.MethodGet, "/api/v1/worker-requests?limit=100&offset=0", false},
+		{http.MethodGet, "/api/v1/worker-requests/request-1", false},
+		{http.MethodPost, "/api/v1/worker-requests/request-1/respond", false},
+		{http.MethodPost, "/api/v1/worker-requests/request-1/answer", false},
+		{http.MethodPost, "/api/v1/worker-requests/request-1/approve", false},
+		{http.MethodPost, "/api/v1/worker-requests/request-1/deny", false},
+		{http.MethodPost, "/api/v1/worker-requests/request-1/cancel", false},
+		{http.MethodGet, "/api/v1/schedules?limit=100&offset=0", false},
+		{http.MethodGet, "/api/v1/schedules/schedule-1", false},
+		{http.MethodPost, "/api/v1/schedules/schedule-1/enable", false},
+		{http.MethodPost, "/api/v1/schedules/schedule-1/disable", false},
+		{http.MethodGet, "/api/v1/sessions?limit=100&offset=0", false},
+		{http.MethodGet, "/api/v1/sessions/session-1/events/stream", true},
+	}
+	for _, tc := range valid {
+		if err := validateRoute(tc.method, tc.path, tc.stream); err != nil {
+			t.Errorf("workspace operation rejected: %s %s", tc.method, tc.path)
+		}
+	}
+	invalid := []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/artifacts?limit=100&offset=0"},
+		{http.MethodPost, "/api/v1/workers/worker-1/start"},
+		{http.MethodGet, "/api/v1/runs/run-1/events?next=http://evil"},
+		{http.MethodPost, "/api/v1/approvals/approval-1/approve?limit=1&offset=0"},
+		{http.MethodGet, "/api/v1/runs/a%2F..%2Fb"},
+	}
+	for _, tc := range invalid {
+		if err := validateRoute(tc.method, tc.path, false); err == nil {
+			t.Errorf("unsafe/unavailable operation accepted: %s %s", tc.method, tc.path)
+		}
+	}
+}
+
+func TestWorkspaceAssetsAndOperatorRoutesAreServedByGo(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[]`)
+	}))
+	defer backend.Close()
+	front, _ := newTestFrontend(t, backend.URL)
+	defer front.Close()
+	host := strings.TrimPrefix(front.URL, "http://")
+	for _, path := range []string{"/", "/app.js", "/model.js", "/style.css", "/sessions.js"} {
+		resp := call(t, front.Client(), http.MethodGet, front.URL+path, nil, host, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("asset %s status=%d", path, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+	for _, path := range []string{"/api/laso/health", "/api/laso/version", "/api/laso/pipelines?limit=100&offset=0", "/api/laso/runs?limit=100&offset=0", "/api/laso/workers?limit=100&offset=0", "/api/laso/worker-jobs?limit=100&offset=0", "/api/laso/approvals?limit=100&offset=0", "/api/laso/worker-requests?limit=100&offset=0", "/api/laso/schedules?limit=100&offset=0"} {
+		resp := call(t, front.Client(), http.MethodGet, front.URL+path, nil, host, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("operator API route %s status=%d", path, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+}
+
 func TestSessionDeepLinkServesReloadableApplication(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/sessions/session-direct" {
@@ -380,5 +464,68 @@ func TestLASOBearerStaysServerSide(t *testing.T) {
 	}
 	if strings.Contains(string(data), "server-secret-token") || resp.Header.Get("Authorization") != "" {
 		t.Fatal("server credential leaked to browser response")
+	}
+}
+
+func TestGoWorkspaceAuthOriginAndBodyLimits(t *testing.T) {
+	var upstreamCalls int
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"ok"}`)
+	}))
+	defer backend.Close()
+	config := Config{Bind: "127.0.0.1:8081", LASOURL: backend.URL, Password: "sixteen-character-password", AllowedHosts: map[string]struct{}{}}
+	h := NewServer(config, testAssets(t))
+	front := httptest.NewServer(h)
+	defer front.Close()
+	config.AllowedHosts[strings.TrimPrefix(front.URL, "http://")] = struct{}{}
+	h.config = config
+	host := strings.TrimPrefix(front.URL, "http://")
+	client := front.Client()
+
+	unauthorized := call(t, client, http.MethodGet, front.URL+"/api/laso/health", nil, host, nil)
+	if unauthorized.StatusCode != http.StatusUnauthorized || unauthorized.Header.Get("WWW-Authenticate") == "" {
+		t.Fatalf("unauthorized request status=%d", unauthorized.StatusCode)
+	}
+	unauthorized.Body.Close()
+
+	large := strings.Repeat("x", maxBody+1)
+	resp := call(t, client, http.MethodPost, front.URL+"/api/laso/pipelines", strings.NewReader(large), host,
+		map[string]string{"Authorization": "Basic b3BlcmF0b3I6c2l4dGVlbi1jaGFyYWN0ZXItcGFzc3dvcmQ=", "Content-Type": "application/json", "Origin": front.URL})
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized body status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	badOrigin := call(t, client, http.MethodPost, front.URL+"/api/laso/pipelines", strings.NewReader(`{}`), host,
+		map[string]string{"Authorization": "Basic b3BlcmF0b3I6c2l4dGVlbi1jaGFyYWN0ZXItcGFzc3dvcmQ=", "Content-Type": "application/json", "Origin": front.URL + "/path"})
+	if badOrigin.StatusCode != http.StatusForbidden {
+		t.Fatalf("non-origin URL status=%d", badOrigin.StatusCode)
+	}
+	badOrigin.Body.Close()
+	if upstreamCalls != 0 {
+		t.Fatalf("invalid requests reached LASO %d times", upstreamCalls)
+	}
+}
+
+func TestUpstreamRedirectIsNeverFollowed(t *testing.T) {
+	var hits int
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if r.URL.Path == "/api/v1/health" {
+			http.Redirect(w, r, "http://127.0.0.1:1/credential-leak", http.StatusFound)
+			return
+		}
+		http.Error(w, "unexpected redirect target", http.StatusInternalServerError)
+	}))
+	defer backend.Close()
+	front, _ := newTestFrontend(t, backend.URL)
+	defer front.Close()
+	resp := call(t, front.Client(), http.MethodGet, front.URL+"/api/laso/health", nil, strings.TrimPrefix(front.URL, "http://"), nil)
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway || hits != 1 || strings.Contains(string(data), "credential-leak") {
+		t.Fatalf("redirect handling status=%d hits=%d body=%s", resp.StatusCode, hits, data)
 	}
 }
