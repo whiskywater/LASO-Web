@@ -104,6 +104,11 @@ jobs:
           LASO_E2E_LASO_SERVER: ../LASO/build-postgres-e2e/bin/laso-server
           LASO_E2E_WEB: build/laso-web
         run: npm run test:e2e -- --grep "PostgreSQL candidate"
+      - name: Remove network traces containing test authentication headers
+        if: failure()
+        run: |
+          find test-results -type f -name '*.zip' -delete
+          rm -rf playwright-report
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

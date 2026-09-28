@@ -94,6 +94,7 @@ function renderThread() {
     const form = document.createElement("form");
     const input = document.createElement("textarea"); input.id = "message"; input.dataset.testid = "message-composer"; input.placeholder = "Message LASO…"; input.rows = 2; input.value = draftMessage; input.setAttribute("aria-label", "Message LASO"); input.setAttribute("aria-describedby", "composer-help");
     input.addEventListener("input", () => { draftMessage = input.value; });
+    input.addEventListener("input", () => { draftMessage = input.value; });
     input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); } });
     const send = document.createElement("button"); send.className = "send"; send.dataset.testid = "send-turn"; send.textContent = "Send"; send.type = "submit";
     const help = document.createElement("span"); help.id = "composer-help"; help.className = "visually-hidden"; help.textContent = "Press Enter to send. Press Shift and Enter for a new line.";
