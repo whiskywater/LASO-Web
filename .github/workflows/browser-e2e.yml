@@ -1,0 +1,57 @@
+name: Python production browser acceptance
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  python-real-laso-browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+      LASO_E2E_LASO_COUNT: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install LASO build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ libyaml-cpp-dev nlohmann-json3-dev libsqlite3-dev libspdlog-dev libcli11-dev libboost-system-dev
+      - name: Check out current-main compatibility fixture
+        run: |
+          git clone --no-checkout https://github.com/Registered-Agent-Attorney/LASO.git ../LASO
+          git -C ../LASO fetch --depth=1 origin 3cf8bed43d841086d58716bad223e08d6bf22a74
+          git -C ../LASO checkout --detach 3cf8bed43d841086d58716bad223e08d6bf22a74
+          test "$(git -C ../LASO rev-parse HEAD)" = 3cf8bed43d841086d58716bad223e08d6bf22a74
+      - name: Build LASO and install browser dependencies
+        run: |
+          cmake -S ../LASO -B ../LASO/build-browser-e2e -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=OFF -DLASO_INSTALL_SYSTEMD_UNIT=OFF
+          cmake --build ../LASO/build-browser-e2e --target laso-server --parallel 2
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Run Python unit, model, and real-LASO browser acceptance
+        run: |
+          python -m py_compile server.py tests/*.py
+          python -m unittest discover -s tests -v
+          npm test
+          npm run test:e2e
+      - name: Remove traces containing test authentication headers
+        if: failure()
+        run: |
+          find test-results -type f -name '*.zip' -delete
+          rm -rf playwright-report
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: python-current-main-browser-failure-artifacts
+          path: |
+            test-results/
+          if-no-files-found: ignore
