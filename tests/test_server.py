@@ -18,9 +18,26 @@ import server
 class FakeLasoHandler(BaseHTTPRequestHandler):
     mode = "normal"
     requests = []
+    cursors = []
 
     def do_GET(self):  # noqa: N802
         self.__class__.requests.append((self.command, self.path, self.headers.get("Authorization")))
+        if self.path.endswith("/events/stream"):
+            self.__class__.cursors.append(self.headers.get("Last-Event-ID"))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(b'id: 1\nevent: session.updated\ndata: {"sequence":1}\n\n')
+            return
+        if self.path == "/api/v1/version" and self.mode == "capabilities":
+            body = json.dumps({"version": "test", "capabilities": ["sessions.durable", "sessions.sse", "sessions.durable", "bad value", 3]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.mode == "redirect":
             self.send_response(302)
             self.send_header("Location", "http://127.0.0.1:1/should-not-follow")
@@ -29,7 +46,9 @@ class FakeLasoHandler(BaseHTTPRequestHandler):
             return
         if self.mode == "slow":
             time.sleep(0.2)
-        if self.mode == "malformed":
+        if self.mode == "large":
+            body = b" " * (server.MAX_RESPONSE + 1)
+        elif self.mode == "malformed":
             body = b"{not-json"
         else:
             body = json.dumps({"status": "ok", "echo": self.path, "untrusted": "<script>bad()</script>"}).encode()
@@ -75,6 +94,7 @@ class WebTests(unittest.TestCase):
     def setUp(self):
         FakeLasoHandler.mode = "normal"
         FakeLasoHandler.requests.clear()
+        FakeLasoHandler.cursors.clear()
 
     def config(self, **kwargs):
         values = {"laso_url": self.upstream_url, "bind": "127.0.0.1", "port": 0, "token": "", "password": ""}
@@ -116,6 +136,16 @@ class WebTests(unittest.TestCase):
                 server.load_env_file(file)
                 self.assertEqual(os.environ["LASO_WEB_PORT"], "$(touch SHOULD_NOT_EXIST)")
 
+    def test_python_server_is_the_production_entrypoint(self):
+        root = Path(__file__).resolve().parents[1]
+        launcher = (root / "run.sh").read_text(encoding="utf-8")
+        unit = (root / "deploy/systemd/laso-web.service").read_text(encoding="utf-8")
+        readme = (root / "README.md").read_text(encoding="utf-8")
+        self.assertIn("exec python3 server.py", launcher)
+        self.assertIn("ExecStart=/usr/bin/python3 /opt/laso-web/server.py", unit)
+        self.assertIn("server.py` is the canonical server", readme)
+        self.assertFalse((root / "go.mod").exists())
+
     def test_route_allowlist_blocks_arbitrary_proxying_and_invalid_queries(self):
         self.assertEqual(server.validate_upstream_path("GET", "/api/v1/health"), "/api/v1/health")
         self.assertEqual(server.validate_upstream_path("POST", "/api/v1/pipelines/hello@1/runs"), "/api/v1/pipelines/hello@1/runs")
@@ -124,6 +154,57 @@ class WebTests(unittest.TestCase):
                              ("POST", "/api/v1/approvals/a/approve?limit=1&offset=0")):
             with self.subTest(path=path), self.assertRaises(server.WebError):
                 server.validate_upstream_path(method, path)
+
+    def test_session_context_and_context_snapshot_routes_are_allowlisted(self):
+        allowed = (
+            ("GET", "/api/v1/sessions?limit=20&offset=0"),
+            ("POST", "/api/v1/sessions"),
+            ("GET", "/api/v1/sessions/session-1"),
+            ("GET", "/api/v1/sessions/session-1/turns?limit=50&offset=0"),
+            ("POST", "/api/v1/sessions/session-1/turns"),
+            ("GET", "/api/v1/sessions/session-1/events?after=0&limit=50"),
+            ("GET", "/api/v1/sessions/session-1/events/stream"),
+            ("POST", "/api/v1/sessions/session-1/close"),
+            ("GET", "/api/v1/sessions/session-1/context"),
+            ("GET", "/api/v1/runs/run-1/context"),
+        )
+        for method, path in allowed:
+            with self.subTest(method=method, path=path):
+                self.assertEqual(server.validate_upstream_path(method, path), path)
+        for method, path in (
+            ("GET", "/api/v1/sessions/../turns"),
+            ("GET", "/api/v1/sessions/session-1/events/stream?after=0"),
+            ("POST", "/api/v1/sessions/session-1/context"),
+            ("POST", "/api/v1/sessions/session-1/context/generations"),
+            ("DELETE", "/api/v1/sessions/session-1"),
+            ("GET", "/api/v1/runs/run-1/context?url=https://attacker.invalid"),
+        ):
+            with self.subTest(method=method, path=path), self.assertRaises(server.WebError):
+                server.validate_upstream_path(method, path)
+
+    def test_capability_parser_is_truthful_and_handles_legacy_version_responses(self):
+        self.assertEqual(server.parse_capabilities({"version": "old"}), {"advertised": False, "capabilities": []})
+        self.assertEqual(server.parse_capabilities({"capabilities": ["sessions.durable", "sessions.durable", "bad value", 3]}),
+                         {"advertised": True, "capabilities": ["sessions.durable"]})
+
+    def test_session_event_stream_forwards_numeric_cursor_and_stays_server_side(self):
+        connection, response = server.call_laso_stream(self.config(token="server-stream-secret"),
+                                                       "/api/v1/sessions/session-1/events/stream", "42")
+        try:
+            self.assertEqual(response.status, 200)
+            self.assertIn("text/event-stream", response.getheader("Content-Type"))
+            self.assertIn(b"id: 1", response.read())
+        finally:
+            response.close()
+            connection.close()
+        method, path, credential = FakeLasoHandler.requests[-1]
+        self.assertEqual((method, path, credential), ("GET", "/api/v1/sessions/session-1/events/stream", "Bearer server-stream-secret"))
+
+    def test_sse_cursor_is_validated_before_opening_upstream(self):
+        for cursor in ("-1", "1.5", "9223372036854775808", "1" * 30):
+            with self.subTest(cursor=cursor), self.assertRaises(server.WebError):
+                server.validate_sse_cursor(cursor)
+        self.assertEqual(server.validate_sse_cursor("42"), "42")
 
     def test_proxy_forwards_only_configured_server_credential_and_json(self):
         status, result = server.call_laso(self.config(token="server-side-token"), "POST",
@@ -137,6 +218,12 @@ class WebTests(unittest.TestCase):
     def test_malformed_upstream_json_is_a_gateway_error(self):
         FakeLasoHandler.mode = "malformed"
         with self.assertRaisesRegex(server.WebError, "malformed JSON") as raised:
+            server.call_laso(self.config(), "GET", "/api/v1/health")
+        self.assertEqual(raised.exception.status, 502)
+
+    def test_oversized_upstream_response_is_bounded(self):
+        FakeLasoHandler.mode = "large"
+        with self.assertRaisesRegex(server.WebError, "4 MiB limit") as raised:
             server.call_laso(self.config(), "GET", "/api/v1/health")
         self.assertEqual(raised.exception.status, 502)
 
@@ -186,12 +273,50 @@ class WebTests(unittest.TestCase):
             self.assertIn('id="content"', page)
             self.assertIn('data-view="history"', page)
             self.assertIn('src="/model.js"', page)
+            self.assertIn('href="/sessions/new"', page)
             self.assertIn("default-src 'self'", response.getheader("Content-Security-Policy"))
 
             connection.request("GET", "/model.js", headers={"Authorization": auth})
             response = connection.getresponse()
             self.assertEqual(response.status, 200)
             self.assertIn("promptOf", response.read().decode())
+
+            connection.request("GET", "/sessions/new", headers={"Authorization": auth})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            session_page = response.read().decode()
+            self.assertIn("New chat", session_page)
+            self.assertIn('href="/style.css"', session_page)
+
+            connection.request("GET", "/session.js", headers={"Authorization": auth})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertIn("Last-Event-ID", response.read().decode())
+
+            connection.request("GET", "/api/laso/capabilities", headers={"Authorization": auth})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(json.loads(response.read()), {"advertised": False, "capabilities": []})
+
+            FakeLasoHandler.mode = "capabilities"
+            connection.request("GET", "/api/laso/capabilities", headers={"Authorization": auth})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(json.loads(response.read()), {"advertised": True, "capabilities": ["sessions.durable", "sessions.sse"]})
+            FakeLasoHandler.mode = "normal"
+
+            connection.request("GET", "/api/laso/sessions/session-1/events/stream", headers={"Authorization": auth, "Last-Event-ID": "42"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertIn("no-cache", response.getheader("Cache-Control"))
+            self.assertIn(b"id: 1", response.read())
+            self.assertEqual(FakeLasoHandler.cursors[-1], "42")
+
+            connection.request("POST", "/api/laso/sessions", body=json.dumps({"pipeline_id": "hello@1"}),
+                               headers={"Authorization": auth, "Origin": f"http://127.0.0.1:{app.server_port}", "Content-Type": "application/json"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 202)
+            self.assertNotIn("server-side-token", response.read().decode())
 
             connection.request("GET", "/", headers={"Authorization": auth, "Host": "attacker.invalid"})
             response = connection.getresponse()

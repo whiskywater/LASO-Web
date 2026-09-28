@@ -12,6 +12,8 @@ LASO `/api/v1`
 
 LASO-Web is a separate Python standard-library process. It serves static assets and a narrow API adapter. The adapter maps UI requests to documented LASO endpoints and rejects arbitrary URLs, methods, and paths. It does not store orchestration state or reproduce LASO policy.
 
+The optional session pages use LASO's durable sessions as the canonical chat/thread identity. Session pages are stable `/sessions/<id>` routes; browser reload and independent LASO-Web processes reload ordered turns from LASO. Session SSE streams pass through the Python adapter with the numeric replay cursor and no local event store/pub-sub. A bounded frame relay closes its upstream connection when the browser disconnects. The capability adapter reads the actual LASO version response and reports missing advertisement as unknown rather than inventing support.
+
 The server-side hop prevents browser JavaScript from learning a configured upstream bearer token and avoids requiring cross-origin browser access from LASO. LASO-Web binds to loopback by default. A non-loopback bind requires an explicit password; remote deployments should also use TLS and a reverse proxy. Since LASO's local development identity is unauthenticated, network exposure must be considered carefully at both layers.
 
 ## Interface boundary
