@@ -112,6 +112,66 @@ func testAssets(t *testing.T) fs.FS {
 	return os.DirFS("../../static")
 }
 
+func TestCapabilityAdapterUsesLASOVersionAdvertisement(t *testing.T) {
+	var authorization string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Get("Authorization")
+		if r.URL.Path != "/api/v1/version" || r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"version":"0.1","capabilities":["sessions.durable","sessions.sse","sessions.context_generations","sessions.context_reduction"]}`)
+	}))
+	defer upstream.Close()
+	front, _ := newTestFrontend(t, upstream.URL)
+	defer front.Close()
+	resp := call(t, front.Client(), http.MethodGet, front.URL+"/api/laso/capabilities", nil, strings.TrimPrefix(front.URL, "http://"), nil)
+	defer resp.Body.Close()
+	var got capabilityResponse
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&got) != nil {
+		t.Fatalf("capability response status=%d", resp.StatusCode)
+	}
+	if !got.Advertised || len(got.Capabilities) != 4 || authorization != "Bearer server-secret-token" {
+		t.Fatalf("advertisement=%+v authorization=%q", got, authorization)
+	}
+	if strings.Contains(strings.Join(got.Capabilities, ","), "server-secret-token") {
+		t.Fatal("LASO bearer credential leaked in capability response")
+	}
+}
+
+func TestCapabilityAdapterKeepsOlderLASOCapabilitiesUnknown(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"version":"older"}`)
+	}))
+	defer upstream.Close()
+	front, _ := newTestFrontend(t, upstream.URL)
+	defer front.Close()
+	resp := call(t, front.Client(), http.MethodGet, front.URL+"/api/laso/capabilities", nil, strings.TrimPrefix(front.URL, "http://"), nil)
+	defer resp.Body.Close()
+	var got capabilityResponse
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&got) != nil || got.Advertised || len(got.Capabilities) != 0 {
+		t.Fatalf("legacy LASO capability response status=%d value=%+v", resp.StatusCode, got)
+	}
+}
+
+func TestCapabilityAdapterRejectsMalformedAdvertisementWithoutLeakingIt(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"capabilities":"password=upstream-secret"}`)
+	}))
+	defer upstream.Close()
+	front, _ := newTestFrontend(t, upstream.URL)
+	defer front.Close()
+	resp := call(t, front.Client(), http.MethodGet, front.URL+"/api/laso/capabilities", nil, strings.TrimPrefix(front.URL, "http://"), nil)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadGateway || strings.Contains(string(body), "upstream-secret") {
+		t.Fatalf("malformed capability response status=%d body=%s", resp.StatusCode, body)
+	}
+}
+
 func call(t *testing.T, client *http.Client, method, endpoint string, body io.Reader, host string, headers map[string]string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(method, endpoint, body)
@@ -250,6 +310,8 @@ func TestRouteValidation(t *testing.T) {
 	}{
 		{http.MethodGet, "/api/v1/sessions?limit=50&offset=0", false, true},
 		{http.MethodGet, "/api/v1/sessions/abc/turns?limit=100&offset=0", false, true},
+		{http.MethodGet, "/api/v1/sessions/abc/context", false, true},
+		{http.MethodGet, "/api/v1/runs/run-1/context", false, true},
 		{http.MethodGet, "/api/v1/sessions/abc/events?after=10&limit=50", false, true},
 		{http.MethodGet, "/api/v1/sessions/abc/events/stream", true, true},
 		{http.MethodPost, "/api/v1/sessions/abc/turns", false, true},
@@ -333,7 +395,7 @@ func TestWorkspaceAssetsAndOperatorRoutesAreServedByGo(t *testing.T) {
 	front, _ := newTestFrontend(t, backend.URL)
 	defer front.Close()
 	host := strings.TrimPrefix(front.URL, "http://")
-	for _, path := range []string{"/", "/app.js", "/model.js", "/style.css", "/sessions.js"} {
+	for _, path := range []string{"/", "/app.js", "/model.js", "/capabilities.js", "/style.css", "/sessions.js"} {
 		resp := call(t, front.Client(), http.MethodGet, front.URL+path, nil, host, nil)
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("asset %s status=%d", path, resp.StatusCode)

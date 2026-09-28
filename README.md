@@ -138,6 +138,8 @@ Go 1.23+ builds and runs the complete application without third-party modules. N
 
 The Playwright suite drives Chromium against a real isolated LASO server and two independently started Go LASO-Web processes. It uses temporary SQLite state, dynamic loopback ports, a test-only Basic password, and temporary logs. Coverage includes two-client session observation, ordered turns, run links, disconnect and replay, LASO restart, deep-link reload, session close, authenticated standalone runs/operator views, approval decisions, the schedules empty state, outage recovery, and a narrow mobile viewport. The browser never seeds a local transcript store.
 
+The `PostgreSQL integration candidate` workflow adds a separate real PostgreSQL lane against the pinned LASO PR #20 integration commit. It runs two LASO instances and two Go LASO-Web instances against isolated per-job databases, then exercises browser sharing/replay and context provenance. See [PostgreSQL integration testing](docs/postgres-integration.md) for the temporary pin, local reproduction, isolation, and compatibility boundaries, including an observed LASO follow-on run limitation after context reduction and restart.
+
 Install Node.js 22, Go 1.23+, CMake/Ninja, LASO's C++ build dependencies, and Playwright's Chromium system dependencies. From a clean LASO-Web checkout beside a clean LASO checkout, run:
 
 ```sh

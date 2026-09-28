@@ -8,6 +8,7 @@ const sessionID = (() => {
 })();
 let session = null, turns = [], pipelines = [], cursor = new window.LasoSessionModel.Cursor(), durableCursor = "0", closed = false, retryDelay = 500;
 let pendingTurn = null, submitting = false, closing = false, streamConnected = false, sidebarSessions = [], draftMessage = "";
+let backendCapabilities = null;
 let latestOffset = 0, oldestLoadedOffset = 0, moreOlder = false, sessionTitle = "";
 const status = (message = "", state = "live") => {
   const node = $("#chat-status");
@@ -315,6 +316,11 @@ document.querySelector("#session-filter")?.addEventListener("input", renderSideb
 async function newSessionPage() {
   const root = $("#chat-content");
   try {
+    backendCapabilities = await window.LasoCapabilities.load();
+    if (backendCapabilities.supports("sessions.durable") === false || backendCapabilities.supports("sessions.sse") === false) {
+      compatibility("The connected LASO server does not advertise both sessions.durable and sessions.sse. Session chat requires durable sessions and replayable event streaming.");
+      return;
+    }
     await api("/api/laso/sessions?limit=1&offset=0");
     pipelines = values(await api("/api/laso/pipelines?limit=100&offset=0"));
   } catch (error) {
@@ -344,6 +350,11 @@ async function newSessionPage() {
 async function openSession() {
   if (!ID.test(sessionID)) { compatibility("The session URL contains an invalid LASO session ID."); return; }
   try {
+    backendCapabilities = await window.LasoCapabilities.load();
+    if (backendCapabilities.supports("sessions.durable") === false || backendCapabilities.supports("sessions.sse") === false) {
+      compatibility("The connected LASO server does not advertise both sessions.durable and sessions.sse. Session history and live updates require those capabilities.");
+      return;
+    }
     session = await api(`/api/laso/sessions/${encodeURIComponent(sessionID)}`);
     if (!session || session.id !== sessionID) throw new Error("LASO returned an invalid session record.");
     await loadTurns(); renderThread(); await populateSidebar();

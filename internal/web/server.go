@@ -76,8 +76,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if r.Method == http.MethodGet && (r.URL.Path == "/app.js" || r.URL.Path == "/model.js" || r.URL.Path == "/style.css" || r.URL.Path == "/sessions.js" || r.URL.Path == "/session-model.js" || r.URL.Path == "/session.js" || r.URL.Path == "/session.css" || r.URL.Path == "/session-mobile.css") {
+	if r.Method == http.MethodGet && (r.URL.Path == "/app.js" || r.URL.Path == "/model.js" || r.URL.Path == "/capabilities.js" || r.URL.Path == "/style.css" || r.URL.Path == "/sessions.js" || r.URL.Path == "/session-model.js" || r.URL.Path == "/session.js" || r.URL.Path == "/session.css" || r.URL.Path == "/session-mobile.css") {
 		s.serveAsset(w, strings.TrimPrefix(r.URL.Path, "/"))
+		return
+	}
+	if r.URL.Path == "/api/laso/capabilities" && r.Method == http.MethodGet {
+		s.proxyCapabilities(w, r)
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/laso/") {

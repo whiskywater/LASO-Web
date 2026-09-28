@@ -39,13 +39,16 @@ func validateRoute(method, path string, stream bool) error {
 		if len(parts) == 2 && identifier.MatchString(parts[0]) && ((parts[1] == "turns" && (method == http.MethodGet || method == http.MethodPost)) || (parts[1] == "events" && method == http.MethodGet) || (parts[1] == "close" && method == http.MethodPost)) {
 			return nil
 		}
+		if len(parts) == 2 && identifier.MatchString(parts[0]) && parts[1] == "context" && method == http.MethodGet {
+			return nil
+		}
 	}
 	if method == http.MethodPost && (base == "/api/v1/sessions" || base == "/api/v1/pipelines") {
 		return nil
 	}
 	if method == http.MethodGet {
 		parts := strings.Split(strings.TrimPrefix(base, "/api/v1/"), "/")
-		collections := map[string]map[string]bool{"runs": {"": true, "messages": true, "events": true, "attempts": true}, "pipelines": {"": true}, "workers": {"": true}, "approvals": {"": true}, "schedules": {"": true}, "worker-jobs": {"": true}, "worker-requests": {"": true}}
+		collections := map[string]map[string]bool{"runs": {"": true, "messages": true, "events": true, "attempts": true, "context": true}, "pipelines": {"": true}, "workers": {"": true}, "approvals": {"": true}, "schedules": {"": true}, "worker-jobs": {"": true}, "worker-requests": {"": true}}
 		if len(parts) == 2 && identifier.MatchString(parts[1]) && collections[parts[0]][""] {
 			return nil
 		}

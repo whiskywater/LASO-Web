@@ -29,8 +29,8 @@ jobs:
         run: |
           node --check static/model.js
           node --check static/app.js
+          node --check static/capabilities.js
           node --check static/sessions.js
           node --check static/session-model.js
           node --check static/session.js
-          node --test tests/test_ui_model.cjs
-          node --test tests/test_session_model.cjs
+          npm test

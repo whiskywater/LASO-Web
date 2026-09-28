@@ -40,7 +40,7 @@ jobs:
       - name: Run Go, model, and browser acceptance tests
         run: |
           go test -count=1 ./...
-          node --test tests/test_ui_model.cjs tests/test_session_model.cjs
+          npm test
           npm run test:e2e
       - uses: actions/upload-artifact@v4
         if: failure()

@@ -17,6 +17,12 @@
   }
   async function load() {
     try {
+      const capabilities = await window.LasoCapabilities.load();
+      if (capabilities.supports("sessions.durable") === false) {
+        sidebar?.classList.remove("hidden");
+        root.replaceChildren(add("p", "This LASO server does not advertise durable sessions. The run workspace remains available.", "sidebar-empty"));
+        return;
+      }
       const sessions = await recentSessions();
       sidebar?.classList.remove("hidden"); newChat?.classList.remove("hidden");
       root.replaceChildren();

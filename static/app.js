@@ -11,7 +11,7 @@ const state = {
   sidebarKey: "", renderKey: "", noticeTimer: 0
 };
 const endpoints = {
-  health: "/api/laso/health", version: "/api/laso/version",
+  health: "/api/laso/health", version: "/api/laso/version", capabilities: "/api/laso/capabilities",
   workers: "/api/laso/workers?limit=100&offset=0", jobs: "/api/laso/worker-jobs?limit=100&offset=0",
   runs: "/api/laso/runs?limit=100&offset=0", pipelines: "/api/laso/pipelines?limit=100&offset=0",
   approvals: "/api/laso/approvals?limit=100&offset=0", requests: "/api/laso/worker-requests?limit=100&offset=0",
@@ -665,6 +665,7 @@ function renderSystem(root) {
   const values = [
     ["Connection", errorFor("health") ? "Unavailable" : health.status || "Unknown"],
     ["LASO version", state.data.version?.version || "Not reported"],
+    ["LASO capabilities", state.data.capabilities?.advertised ? state.data.capabilities.capabilities.join(", ") || "None advertised" : "Not advertised; API compatibility probing"],
     ["Registered workers", list("workers").length],
     ["Pipelines", list("pipelines").length],
     ["Runs in recent history", list("runs").length],

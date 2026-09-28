@@ -67,6 +67,49 @@ async function expectLiveOrCaughtUp(page) {
   await expect(page.getByTestId("chat-status")).toHaveAttribute("data-state", /^(live|caught-up)$/);
 }
 
+test("PostgreSQL candidate advertises context support and exposes immutable reduction provenance", async ({ browser }) => {
+  test.skip(stack.storage !== "postgres" || !stack.contextReduction, "requires LASO integration candidate with reduction enabled on PostgreSQL");
+  const a = await client(browser, stack.webURLs[0]);
+  const advertised = await a.page.evaluate(async () => (await (await fetch("/api/laso/capabilities")).json()));
+  expect(advertised.advertised).toBe(true);
+  for (const name of ["sessions.durable", "sessions.ordered_turns", "sessions.sequential_execution", "sessions.event_replay", "sessions.sse", "sessions.context_generations", "sessions.run_context_snapshots", "sessions.context_reduction"]) {
+    expect(advertised.capabilities).toContain(name);
+  }
+
+  const sessionURL = await createSession(a.page, stack.webURLs[0]);
+  const sessionID = new URL(sessionURL).pathname.split("/").at(-1);
+  const b = await client(browser, `${stack.webURLs[1]}${new URL(sessionURL).pathname}`);
+  await expect(b.page.getByTestId("chat-status")).toHaveAttribute("data-state", "caught-up", { timeout: 15_000 });
+  for (let index = 1; index <= 6; index++) {
+    const sender = index % 2 === 1 ? a.page : b.page;
+    const message = `PostgreSQL context reduction turn ${index} ` + "x".repeat(180);
+    await sender.getByTestId("message-composer").fill(message);
+    await sender.getByTestId("send-turn").click();
+    for (const observer of [a.page, b.page]) {
+      await expect(observer.getByTestId("user-turn")).toHaveCount(index, { timeout: 15_000 });
+      await expect(observer.getByTestId("assistant-turn")).toHaveCount(index, { timeout: 30_000 });
+    }
+  }
+  const history = await a.page.evaluate(async id => (await (await fetch(`/api/laso/sessions/${encodeURIComponent(id)}/turns?limit=100&offset=0`)).json()), sessionID);
+  expect(history).toHaveLength(6);
+  const finalTurn = history.at(-1);
+  expect(finalTurn.run_id).toBeTruthy();
+  const context = await a.page.evaluate(async id => (await (await fetch(`/api/laso/sessions/${encodeURIComponent(id)}/context`)).json()), sessionID);
+  expect(context.current_generation.generation).toBeGreaterThan(0);
+  expect(context.current_generation).not.toHaveProperty("payload");
+  const snapshot = await a.page.evaluate(async runID => (await (await fetch(`/api/laso/runs/${encodeURIComponent(runID)}/context`)).json()), finalTurn.run_id);
+  expect(snapshot.session_id).toBe(sessionID);
+  expect(snapshot.session_turn_id).toBe(finalTurn.id);
+  expect(snapshot.turn_sequence).toBe(finalTurn.sequence);
+  expect(snapshot.context_generation).toBeGreaterThan(0);
+  expect(snapshot.context_generation_id).toBe(context.current_generation.id);
+  await expect(a.page.getByTestId("user-turn").first()).toContainText("PostgreSQL context reduction turn 1");
+  await expect(a.page.getByTestId("user-turn").last()).toContainText("PostgreSQL context reduction turn 6");
+  await a.page.goto(`${stack.webURLs[0]}/`);
+  await a.page.getByRole("button", { name: "System" }).click();
+  await expect(a.page.locator("#content")).toContainText("sessions.context_reduction");
+});
+
 test("two browser clients share durable ordered turns and recover through SSE replay and LASO restart", async ({ browser }) => {
   const a = await client(browser, stack.webURLs[0]);
   const sessionURL = await createSession(a.page);
@@ -118,6 +161,7 @@ test("two browser clients share durable ordered turns and recover through SSE re
 
   await stack.stopLaso();
   await expect(a.page.getByTestId("chat-status")).toHaveAttribute("data-state", /^(reconnecting|unavailable)$/, { timeout: 15_000 });
+  if (stack.canRestartPostgres) await stack.restartPostgres();
   await stack.restartLaso();
   await expectLiveOrCaughtUp(a.page);
   await refresh.page.reload();
@@ -140,10 +184,13 @@ test("authenticated workspace covers runs, operator views, approvals, and LASO o
   const { page } = await client(browser, stack.webURLs[0]);
   await expect(page.locator("#connection-label")).toHaveText("Connected", { timeout: 15_000 });
   const browserVisible = await page.evaluate(async () => {
-    const paths = ["/", "/app.js", "/sessions.js", "/api/laso/version"];
+    const paths = ["/", "/app.js", "/sessions.js", "/api/laso/version", "/api/laso/capabilities"];
     return (await Promise.all(paths.map(async route => await (await fetch(route)).text()))).join("\n");
   });
   expect(browserVisible).not.toContain("e2e-server-only-secret");
+  if (stack.storage === "postgres") {
+    expect(browserVisible).not.toContain(stack.postgresSchema);
+  }
   await expect(page.locator("#pipeline-select")).toContainText("hello");
   await page.locator("#pipeline-select").selectOption("hello@1");
   await page.locator("#task-input").fill("browser standalone run");
@@ -179,6 +226,24 @@ test("authenticated workspace covers runs, operator views, approvals, and LASO o
   await page.getByRole("button", { name: "System" }).click();
   await expect(page.locator("#content")).toContainText("Connection");
   await expect(page.locator("#content")).toContainText("ok");
+
+  if (stack.canRestartPostgres) {
+    await stack.stopPostgres();
+    const databaseOutage = await page.evaluate(async () => {
+      const response = await fetch("/api/laso/runs?limit=1&offset=0");
+      return { status: response.status, body: await response.text() };
+    });
+    expect([502, 503]).toContain(databaseOutage.status);
+    expect(databaseOutage.body).not.toContain("laso_web_pr20_");
+    expect(databaseOutage.body).not.toContain("password=");
+    await page.locator("#refresh").click();
+    await expect(page.locator("#content")).toContainText("Could not load runs.", { timeout: 15_000 });
+    await stack.startPostgres();
+    await stack.restartLaso();
+    await page.locator("#refresh").click();
+    await expect(page.locator("#connection-label")).toHaveText("Connected", { timeout: 20_000 });
+    await expect.poll(async () => await page.evaluate(async () => (await fetch("/api/laso/runs?limit=1&offset=0")).status), { timeout: 15_000 }).toBe(200);
+  }
 
   await stack.stopLaso();
   await page.locator("#refresh").click();

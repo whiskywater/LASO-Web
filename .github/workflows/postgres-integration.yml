@@ -1,0 +1,114 @@
+name: PostgreSQL integration candidate
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-browser-acceptance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: laso_ci
+          POSTGRES_PASSWORD: laso_ci_test_only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U laso_ci -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+      LASO_E2E_LASO_COUNT: 2
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - name: Create isolated database role and databases
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: 5432
+          PGUSER: laso_ci
+          PGPASSWORD: laso_ci_test_only
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          APP_PASSWORD: laso_ci_test_only
+        run: |
+          echo "::add-mask::${APP_PASSWORD}"
+          suffix="${RUN_ID}_${RUN_ATTEMPT}"
+          role="laso_web_${suffix}"
+          database="laso_web_pr20_${suffix}"
+          context_database="laso_web_ctx_${suffix}"
+          schema="laso_web_${suffix}"
+          psql -d postgres -v ON_ERROR_STOP=1 -v role="$role" -v database="$database" -v context_database="$context_database" -v app_password="$APP_PASSWORD" <<'SQL'
+          SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'role', :'app_password') \gexec
+          SELECT format('CREATE DATABASE %I OWNER %I', :'database', :'role') \gexec
+          SELECT format('CREATE DATABASE %I OWNER %I', :'context_database', :'role') \gexec
+          SQL
+          echo "LASO_E2E_POSTGRES_DSN=host=127.0.0.1 port=5432 dbname=${database} user=${role} password=laso_ci_test_only" >> "$GITHUB_ENV"
+          echo "LASO_E2E_POSTGRES_SCHEMA=${schema}" >> "$GITHUB_ENV"
+      - name: Install LASO build and browser dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ libpq-dev libpqxx-dev libyaml-cpp-dev nlohmann-json3-dev libspdlog-dev libcli11-dev libboost-system-dev postgresql-client
+      - name: Check out pinned LASO integration candidate
+        run: |
+          git clone --no-checkout https://github.com/Registered-Agent-Attorney/LASO.git ../LASO
+          git -C ../LASO fetch --depth=1 origin 4547620abb6f30f3163a10dcb08fe52588499659
+          git -C ../LASO checkout --detach 4547620abb6f30f3163a10dcb08fe52588499659
+          test "$(git -C ../LASO rev-parse HEAD)" = 4547620abb6f30f3163a10dcb08fe52588499659
+      - name: Build LASO PostgreSQL server and LASO-Web
+        run: |
+          cmake -S ../LASO -B ../LASO/build-postgres-e2e -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=OFF -DLASO_INSTALL_SYSTEMD_UNIT=OFF
+          cmake --build ../LASO/build-postgres-e2e --target laso-server --parallel 2
+          mkdir -p build
+          go build -trimpath -o build/laso-web .
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Verify source formatting, Go client, and browser model
+        run: |
+          test -z "$(gofmt -l main.go internal/web/*.go)"
+          go vet ./...
+          go test -count=1 ./...
+          go test -race -count=1 ./...
+          go build -trimpath ./...
+          npm test
+          node --check static/capabilities.js
+      - name: Run PostgreSQL-backed two-service browser acceptance
+        env:
+          LASO_SOURCE_DIR: ../LASO
+          LASO_E2E_LASO_SERVER: ../LASO/build-postgres-e2e/bin/laso-server
+          LASO_E2E_WEB: build/laso-web
+        run: npm run test:e2e
+      - name: Run isolated PostgreSQL context-reduction browser acceptance
+        env:
+          LASO_E2E_LASO_COUNT: 2
+          LASO_E2E_CONTEXT_REDUCTION: 1
+          LASO_E2E_POSTGRES_DSN: host=127.0.0.1 port=5432 dbname=laso_web_ctx_${{ github.run_id }}_${{ github.run_attempt }} user=laso_web_${{ github.run_id }}_${{ github.run_attempt }} password=laso_ci_test_only
+          LASO_E2E_POSTGRES_SCHEMA: laso_ctx_${{ github.run_id }}_${{ github.run_attempt }}
+          LASO_SOURCE_DIR: ../LASO
+          LASO_E2E_LASO_SERVER: ../LASO/build-postgres-e2e/bin/laso-server
+          LASO_E2E_WEB: build/laso-web
+        run: npm run test:e2e -- --grep "PostgreSQL candidate"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: postgres-browser-failure-artifacts
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
