@@ -1,4 +1,4 @@
-name: Python PostgreSQL integration candidate
+name: Python PostgreSQL current LASO main
 
 on:
   pull_request:
@@ -50,7 +50,7 @@ jobs:
           echo "::add-mask::${APP_PASSWORD}"
           suffix="${RUN_ID}_${RUN_ATTEMPT}"
           role="laso_web_${suffix}"
-          database="laso_web_pr20_${suffix}"
+          database="laso_web_main_${suffix}"
           context_database="laso_web_ctx_${suffix}"
           schema="laso_web_${suffix}"
           psql -d postgres -v ON_ERROR_STOP=1 -v role="$role" -v database="$database" -v context_database="$context_database" -v app_password="$APP_PASSWORD" <<'SQL'
@@ -62,12 +62,12 @@ jobs:
           echo "LASO_E2E_POSTGRES_SCHEMA=${schema}" >> "$GITHUB_ENV"
       - name: Install LASO PostgreSQL and browser dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ libpq-dev libpqxx-dev libyaml-cpp-dev nlohmann-json3-dev libspdlog-dev libcli11-dev libboost-system-dev postgresql-client
-      - name: Check out pinned LASO PR #20 integration candidate
+      - name: Check out the audited current LASO main
         run: |
           git clone --no-checkout https://github.com/Registered-Agent-Attorney/LASO.git ../LASO
-          git -C ../LASO fetch --depth=1 origin 4547620abb6f30f3163a10dcb08fe52588499659
-          git -C ../LASO checkout --detach 4547620abb6f30f3163a10dcb08fe52588499659
-          test "$(git -C ../LASO rev-parse HEAD)" = 4547620abb6f30f3163a10dcb08fe52588499659
+          git -C ../LASO fetch --depth=1 origin 568edd2c9934ad10553c822af977113227379931
+          git -C ../LASO checkout --detach 568edd2c9934ad10553c822af977113227379931
+          test "$(git -C ../LASO rev-parse HEAD)" = 568edd2c9934ad10553c822af977113227379931
       - name: Build LASO, install browser dependencies, and check Python application
         run: |
           cmake -S ../LASO -B ../LASO/build-postgres-e2e -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=OFF -DLASO_INSTALL_SYSTEMD_UNIT=OFF

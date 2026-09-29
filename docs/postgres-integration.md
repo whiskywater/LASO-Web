@@ -1,7 +1,6 @@
 # PostgreSQL-backed LASO integration
 
-The integration lane validates LASO-Web's Python production server against the
-PostgreSQL durable-session candidate. The production request path remains:
+The integration lane validates LASO-Web's Python production server against current LASO `main` and its PostgreSQL durable-session implementation. The production request path remains:
 
 ```text
 Browser -> Python LASO-Web -> LASO API -> PostgreSQL
@@ -10,15 +9,13 @@ Browser -> Python LASO-Web -> LASO API -> PostgreSQL
 LASO-Web has no PostgreSQL driver, DSN setting, database tables, or direct
 connection. PostgreSQL is provisioned only for LASO and the integration test.
 
-## Candidate and CI lanes
+## CI lanes
 
-The `Python PostgreSQL integration candidate` workflow checks out the exact
-LASO PR #20 candidate commit
-`4547620abb6f30f3163a10dcb08fe52588499659` (branch
-`integration/postgres-durable-sessions`) as a temporary test pin. When this
-stack lands on LASO `main`, move the workflow to a reviewed current-main commit
-and keep the backend-API integration lane. LASO-Web's production code has no
-PR number, branch name, commit check, or candidate-specific behavior.
+The `Python PostgreSQL current LASO main` workflow checks out the audited LASO
+`main` commit `568edd2c9934ad10553c822af977113227379931`. LASO PR #20, which
+introduced PostgreSQL-backed durable sessions, is merged into this commit. The
+Web application contains no PR number, branch name, commit check, or
+candidate-specific behavior.
 
 CI provisions PostgreSQL 16, creates run/attempt-specific application role,
 databases, and schema names, then starts two LASO processes in
@@ -40,10 +37,12 @@ between both browser/frontend/backend paths, and checks context-generation and
 run-snapshot metadata without exposing payloads. Repeated service startup
 against an already migrated database is included in the setup/restart path.
 
-The other browser workflow checks compatibility against LASO `main` commit
-`3cf8bed43d841086d58716bad223e08d6bf22a74` using SQLite. That build does not
-advertise capabilities; the Python adapter returns `advertised: false` and the
-session page falls back to actual route probing instead of claiming support.
+The separate legacy browser workflow checks compatibility against the pinned
+SQLite-era LASO commit `3cf8bed43d841086d58716bad223e08d6bf22a74`. That build
+does not advertise capabilities; the Python adapter returns
+`advertised: false` and the session page falls back to actual route probing
+instead of claiming support. Current LASO `main` no longer supports SQLite and
+is exercised by the PostgreSQL workflow above.
 
 ## Local reproduction
 
@@ -52,12 +51,12 @@ dependencies, PostgreSQL 16, and Playwright Chromium dependencies. Use fresh
 clones and a disposable PostgreSQL instance. Create a unique role, database,
 and schema; do not use a shared or production database.
 
-Build LASO PR #20 and install browser dependencies:
+Build the pinned current LASO `main` checkout and install browser dependencies:
 
 ```sh
 git clone https://github.com/Registered-Agent-Attorney/LASO.git ../LASO
-git -C ../LASO fetch origin 4547620abb6f30f3163a10dcb08fe52588499659
-git -C ../LASO checkout --detach 4547620abb6f30f3163a10dcb08fe52588499659
+git -C ../LASO fetch origin 568edd2c9934ad10553c822af977113227379931
+git -C ../LASO checkout --detach 568edd2c9934ad10553c822af977113227379931
 cmake -S ../LASO -B ../LASO/build-postgres-e2e -G Ninja \
   -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=OFF -DLASO_INSTALL_SYSTEMD_UNIT=OFF
 cmake --build ../LASO/build-postgres-e2e --target laso-server --parallel 2
@@ -98,7 +97,9 @@ API reads recovered.
 
 ## Core follow-up required
 
-Do not combine or silently hide this observed LASO PR #20 issue. On a fresh
+Do not combine or silently hide the observed LASO worker/queue issue. It was
+reproduced on current LASO `main` commit
+`568edd2c9934ad10553c822af977113227379931`. On a fresh
 database with automatic reduction enabled, run the two-client context scenario
 (six long turns), then the shared-session/restart scenario, and then submit a
 standalone `hello-pipeline` run through LASO-Web. The first two scenarios pass,
@@ -119,7 +120,7 @@ LASO_E2E_POSTGRES_SCHEMA=laso_web_repro npm run test:e2e
 ```
 
 The observed run in this pass used LASO
-`4547620abb6f30f3163a10dcb08fe52588499659`, PostgreSQL 16.15, the
+`568edd2c9934ad10553c822af977113227379931`, PostgreSQL 16.15, the
 `recent-turns` reducer with `threshold_bytes: 1800`, `target_bytes: 1600`,
 `max_input_bytes: 16384`, and `timeout_ms: 30000`. The context-generation test
 and shared-session/restart test passed; the next standalone `hello` run remained
