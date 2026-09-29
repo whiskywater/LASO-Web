@@ -19,15 +19,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Compile and test
+      - name: Compile and test Python server
         run: |
           python -m py_compile server.py tests/*.py
           python -m unittest discover -s tests -v
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - name: Validate browser UI logic
         run: |
           node --check static/model.js
           node --check static/app.js
-          node --test tests/test_ui_model.cjs
+          node --check static/capabilities.js
+          node --check static/sessions.js
+          node --check static/session-model.js
+          node --check static/session.js
+          npm ci
+          npm test

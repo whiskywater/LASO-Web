@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import http.client
 import hmac
 import ipaddress
 import json
@@ -21,13 +22,21 @@ ROOT = Path(__file__).resolve().parent
 MAX_BODY = 1024 * 1024
 MAX_RESPONSE = 4 * 1024 * 1024
 REQUEST_TIMEOUT = 8
+SSE_TIMEOUT = 45  # LASO emits an idle-stream heartbeat every 15 seconds.
 MAX_CLIENTS = 32
 ID = r"[A-Za-z0-9_.@-]{1,128}"
 PAGINATION = re.compile(r"(?:limit=[1-9][0-9]{0,2}&offset=[0-9]{1,9}|offset=[0-9]{1,9}&limit=[1-9][0-9]{0,2})\Z")
 ITEM_PATH = re.compile(
-    rf"/api/v1/(pipelines|runs|approvals|schedules|workers|worker-jobs|worker-requests)/({ID})"
-    rf"(?:/(runs|cancel|resume|events|attempts|messages|approve|reject|enable|disable|respond|answer|deny))?\Z"
+    rf"/api/v1/(pipelines|runs|approvals|schedules|workers|worker-jobs|worker-requests|sessions)/({ID})"
+    rf"(?:/(runs|cancel|resume|events|attempts|messages|approve|reject|enable|disable|respond|answer|deny|turns|close|context|events/stream|context/generations))?\Z"
 )
+RUN_CONTEXT_PATH = re.compile(rf"/api/v1/runs/({ID})/context\Z")
+SESSION_CONTEXT_PATH = re.compile(rf"/api/v1/sessions/({ID})/context(?:/generations)?\Z")
+SESSION_TURNS_PAGE = re.compile(rf"/api/v1/sessions/({ID})/turns\Z")
+SESSION_EVENTS_PAGE = re.compile(rf"/api/v1/sessions/({ID})/events\Z")
+SESSION_STREAM = re.compile(rf"/api/v1/sessions/({ID})/events/stream\Z")
+MAX_EVENT_FRAME = 4 * 1024 * 1024
+MAX_SSE_CURSOR = (1 << 63) - 1
 
 
 class WebError(Exception):
@@ -126,32 +135,84 @@ def validate_upstream_path(method: str, raw_path: str) -> str:
     if len(raw_path) > 512 or not raw_path.startswith("/api/v1/") or "#" in raw_path:
         raise WebError(400, "Invalid LASO API route")
     path, separator, query = raw_path.partition("?")
-    if separator and (path not in {"/api/v1/pipelines", "/api/v1/runs", "/api/v1/approvals",
+    if re.search(r"/(?:\.{1,2})(?:/|\Z)", path):
+        raise WebError(400, "Invalid LASO API route")
+    paged = path in {"/api/v1/pipelines", "/api/v1/runs", "/api/v1/approvals",
                                     "/api/v1/schedules", "/api/v1/workers", "/api/v1/worker-jobs",
-                                    "/api/v1/worker-requests"} or not PAGINATION.fullmatch(query)):
+                                    "/api/v1/worker-requests", "/api/v1/sessions"}
+    turns_page = SESSION_TURNS_PAGE.fullmatch(path) and PAGINATION.fullmatch(query)
+    events_page = SESSION_EVENTS_PAGE.fullmatch(path) and re.fullmatch(r"after=(?:0|[1-9][0-9]{0,18})&limit=[1-9][0-9]{0,2}\Z", query)
+    if separator and not ((paged and PAGINATION.fullmatch(query)) or turns_page or events_page):
         raise WebError(400, "Invalid LASO API query")
     if method == "GET" and path in {
         "/api/v1/health", "/api/v1/version", "/api/v1/pipelines", "/api/v1/runs",
         "/api/v1/approvals", "/api/v1/schedules", "/api/v1/workers", "/api/v1/worker-jobs",
         "/api/v1/worker-requests",
+        "/api/v1/sessions",
     }:
         return raw_path
     match = ITEM_PATH.fullmatch(path)
     if match:
         collection, _item_id, action = match.groups()
-        if method == "GET" and (action is None or (collection == "runs" and action in {"events", "attempts", "messages"})):
+        if method == "GET" and (action is None or (collection == "runs" and action in {"events", "attempts", "messages", "context"})
+                                 or (collection == "sessions" and action in {"turns", "events", "context", "events/stream"})):
             return raw_path
         allowed = {
             "pipelines": {"runs"}, "runs": {"cancel", "resume"},
             "approvals": {"approve", "reject"}, "schedules": {"enable", "disable"},
             "worker-jobs": {"cancel"},
             "worker-requests": {"respond", "answer", "approve", "deny", "cancel"},
+            "sessions": {"turns", "close"},
         }
         if method == "POST" and action in allowed.get(collection, set()):
             return raw_path
     if method == "POST" and path == "/api/v1/pipelines":
         return path
+    if method == "POST" and path == "/api/v1/sessions":
+        return path
+    if method == "GET" and (RUN_CONTEXT_PATH.fullmatch(path) or (SESSION_CONTEXT_PATH.fullmatch(path) and not path.endswith("/generations"))):
+        return raw_path
     raise WebError(404, "LASO API operation is not available in this adapter")
+
+
+def parse_capabilities(value: object) -> dict:
+    """Normalize only capabilities actually advertised by LASO; old servers stay unknown."""
+    if not isinstance(value, dict) or not isinstance(value.get("capabilities"), list):
+        return {"advertised": False, "capabilities": []}
+    names = []
+    for name in value["capabilities"]:
+        if isinstance(name, str) and re.fullmatch(r"[a-z][a-z0-9]*(?:[._][a-z0-9]+)*", name) and name not in names:
+            names.append(name)
+    return {"advertised": True, "capabilities": names}
+
+
+def validate_sse_cursor(cursor: str) -> str:
+    if cursor and (not cursor.isdecimal() or len(cursor) > 19 or int(cursor) > MAX_SSE_CURSOR):
+        raise WebError(400, "Invalid session event cursor")
+    return cursor
+
+
+def call_laso_stream(config: Config, path: str, last_event_id: str = ""):
+    """Open a bounded-route LASO SSE stream. Caller must close both returned objects."""
+    path = validate_upstream_path("GET", path)
+    if not SESSION_STREAM.fullmatch(path):
+        raise WebError(404, "LASO event stream is not available in this adapter")
+    parts = urlsplit(config.laso_url)
+    connection_type = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
+    connection = connection_type(parts.hostname, parts.port, timeout=SSE_TIMEOUT)
+    target = parts.path.rstrip("/") + path
+    headers = {"Accept": "text/event-stream", "Cache-Control": "no-cache", "User-Agent": "LASO-Web/0.1"}
+    if config.token:
+        headers["Authorization"] = "Bearer " + config.token
+    if last_event_id:
+        headers["Last-Event-ID"] = last_event_id
+    try:
+        connection.request("GET", target, headers=headers)
+        response = connection.getresponse()
+        return connection, response
+    except (OSError, TimeoutError, http.client.HTTPException):
+        connection.close()
+        raise WebError(502, "Cannot contact LASO", "LASO event stream is unreachable") from None
 
 
 def call_laso(config: Config, method: str, path: str, body: dict | None = None) -> tuple[int, object]:
@@ -224,8 +285,24 @@ class Handler(BaseHTTPRequestHandler):
             # Clients can disappear during a timeout or upstream restart.
             pass
 
-    def _json(self, status: int, value: object) -> None:
-        self._send(status, json.dumps(value, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+    def _json(self, status: int, value: object, headers: dict[str, str] | None = None) -> None:
+        body = json.dumps(value, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy", "default-src 'self'; connect-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'")
+        for name, header_value in (headers or {}).items():
+            if name.casefold() == "retry-after" and header_value.isdecimal() and len(header_value) <= 8:
+                self.send_header("Retry-After", header_value)
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def _authorized(self) -> bool:
         if self._auth_ok():
@@ -254,10 +331,38 @@ class Handler(BaseHTTPRequestHandler):
             content = (ROOT / "static" / "index.html").read_bytes()
             self._send(200, content, "text/html; charset=utf-8")
             return
-        if self.path in {"/app.js", "/model.js", "/style.css"}:
+        if self.path == "/sessions/new" or re.fullmatch(rf"/sessions/{ID}", self.path):
+            self._send(200, (ROOT / "static" / "session.html").read_bytes(), "text/html; charset=utf-8")
+            return
+        static_types = {
+            "/app.js": "text/javascript; charset=utf-8", "/model.js": "text/javascript; charset=utf-8",
+            "/sessions.js": "text/javascript; charset=utf-8", "/session.js": "text/javascript; charset=utf-8",
+            "/session-model.js": "text/javascript; charset=utf-8", "/capabilities.js": "text/javascript; charset=utf-8",
+            "/style.css": "text/css; charset=utf-8", "/session.css": "text/css; charset=utf-8",
+            "/session-mobile.css": "text/css; charset=utf-8",
+        }
+        if self.path in static_types:
             name = self.path[1:]
-            kind = "text/javascript; charset=utf-8" if name.endswith(".js") else "text/css; charset=utf-8"
-            self._send(200, (ROOT / "static" / name).read_bytes(), kind)
+            self._send(200, (ROOT / "static" / name).read_bytes(), static_types[self.path])
+            return
+        if self.path == "/api/laso/capabilities":
+            try:
+                status, version = call_laso(self.server.config, "GET", "/api/v1/version")
+                if status == 404:
+                    self._json(200, {"advertised": False, "capabilities": []})
+                elif status >= 400:
+                    self._json(502, {"error": "LASO capability discovery failed",
+                                     "detail": f"LASO returned HTTP {status}"})
+                else:
+                    self._json(200, parse_capabilities(version))
+            except WebError as exc:
+                if exc.status == 404:
+                    self._json(200, {"advertised": False, "capabilities": []})
+                else:
+                    self._json(exc.status, {"error": exc.message, "detail": exc.detail})
+            return
+        if self.path.startswith("/api/laso/") and self.path.endswith("/events/stream"):
+            self._stream_events()
             return
         if self.path.startswith("/api/laso/"):
             try:
@@ -268,6 +373,72 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(exc.status, {"error": exc.message, "detail": exc.detail})
             return
         self._json(404, {"error": "Not found"})
+
+    def _stream_events(self) -> None:
+        route = "/api/v1/" + self.path[len("/api/laso/"):]
+        try:
+            cursor = validate_sse_cursor(self.headers.get("Last-Event-ID", ""))
+            validate_upstream_path("GET", route)
+        except WebError as exc:
+            self._json(exc.status, {"error": exc.message})
+            return
+        connection = response = None
+        headers_sent = False
+        try:
+            connection, response = call_laso_stream(self.server.config, route, cursor)
+            if response.status != 200:
+                response.read(MAX_RESPONSE + 1)
+                retry_after = response.getheader("Retry-After", "")
+                self._json(response.status, {"error": "LASO event stream request failed",
+                                             "detail": f"LASO returned HTTP {response.status}"},
+                           {"Retry-After": retry_after})
+                return
+            content_type = response.getheader("Content-Type", "").split(";", 1)[0].strip().casefold()
+            if content_type != "text/event-stream":
+                self._json(502, {"error": "LASO returned an invalid event stream"})
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-store")
+            self.send_header("Connection", "close")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Content-Security-Policy", "default-src 'self'; connect-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'")
+            self.end_headers()
+            headers_sent = True
+            pending = bytearray()
+            while True:
+                chunk = response.read1(16 * 1024)
+                if not chunk:
+                    break
+                pending.extend(chunk)
+                while b"\n\n" in pending or b"\r\n\r\n" in pending:
+                    split = pending.find(b"\n\n")
+                    crlf = pending.find(b"\r\n\r\n")
+                    if crlf >= 0 and (split < 0 or crlf < split):
+                        boundary, width = crlf, 4
+                    else:
+                        boundary, width = split, 2
+                    frame = bytes(pending[:boundary + width])
+                    del pending[:boundary + width]
+                    if len(frame) > MAX_EVENT_FRAME:
+                        raise WebError(502, "LASO event exceeded the 4 MiB frame limit")
+                    self.wfile.write(frame)
+                    self.wfile.flush()
+                if len(pending) > MAX_EVENT_FRAME:
+                    raise WebError(502, "LASO event exceeded the 4 MiB frame limit")
+        except WebError as exc:
+            if not headers_sent:
+                self._json(exc.status, {"error": exc.message, "detail": exc.detail})
+        except (BrokenPipeError, ConnectionResetError, OSError, http.client.HTTPException):
+            pass
+        finally:
+            if response is not None:
+                response.close()
+            if connection is not None:
+                connection.close()
 
     def do_POST(self) -> None:  # noqa: N802
         if not self._host_ok():

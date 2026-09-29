@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#11181d">
+  <title>LASO Session</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/session.css">
+  <link rel="stylesheet" href="/session-mobile.css">
+</head>
+<body>
+  <header class="chat-topbar">
+    <button id="session-nav-toggle" class="session-nav-toggle" type="button" aria-label="Show session list" aria-controls="session-sidebar" aria-expanded="false">☰</button>
+    <a href="/" class="brand"><span class="brand-mark">L</span> LASO<span class="muted"> / WEB</span></a>
+    <a href="/" class="workspace-link">Run workspace</a>
+  </header>
+  <div class="chat-layout">
+    <aside id="session-sidebar" class="chat-sidebar">
+      <a class="new-chat" data-testid="new-chat" href="/sessions/new">＋ New chat</a>
+      <h2>Sessions</h2>
+      <label class="session-filter-label" for="session-filter">Filter recent sessions</label>
+      <input id="session-filter" type="search" autocomplete="off" placeholder="Label, pipeline, ID, or state" aria-describedby="session-filter-help">
+      <span id="session-filter-help" class="visually-hidden">Filters the recent session list by its derived label, pipeline, identifier, or state.</span>
+      <nav id="session-list" aria-label="Sessions"><p class="muted">Loading sessions…</p></nav>
+      <p class="sidebar-note">Sessions and their ordered turns are stored by LASO. Titles are derived from the first message; this LASO API does not yet support renaming.</p>
+    </aside>
+    <main class="chat-main">
+      <div id="chat-status" class="chat-status" data-testid="chat-status" data-state="loading" role="status" aria-live="polite" aria-atomic="true"></div>
+      <section id="chat-content"></section>
+    </main>
+  </div>
+  <script src="/session-model.js" defer></script>
+  <script src="/capabilities.js" defer></script>
+  <script src="/session.js" defer></script>
+</body>
+</html>

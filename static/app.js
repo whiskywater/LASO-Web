@@ -12,6 +12,7 @@ const state = {
 };
 const endpoints = {
   health: "/api/laso/health", version: "/api/laso/version",
+  capabilities: "/api/laso/capabilities",
   workers: "/api/laso/workers?limit=100&offset=0", jobs: "/api/laso/worker-jobs?limit=100&offset=0",
   runs: "/api/laso/runs?limit=100&offset=0", pipelines: "/api/laso/pipelines?limit=100&offset=0",
   approvals: "/api/laso/approvals?limit=100&offset=0", requests: "/api/laso/worker-requests?limit=100&offset=0",
@@ -672,6 +673,11 @@ function renderSystem(root) {
   ];
   values.forEach(([label, value]) => { const card = element("article", undefined, "system-card"); card.append(element("span", label), element("strong", String(value))); grid.append(card); });
   page.append(grid);
+  const capabilities = state.data.capabilities || { advertised: false, capabilities: [] };
+  const capCard = element("article", undefined, "system-card");
+  capCard.append(element("span", "LASO capabilities"), element("strong", capabilities.advertised ? "Advertised" : "Not advertised"));
+  if (capabilities.advertised) capCard.append(detail(capabilities.capabilities, "Available capabilities"));
+  page.append(capCard);
   ["health", "version", "workers", "pipelines", "runs", "jobs", "approvals", "requests", "schedules"].forEach(key => {
     const err = sectionError(key); if (err) page.append(err);
   });

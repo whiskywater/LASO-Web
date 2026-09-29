@@ -1,0 +1,308 @@
+"use strict";
+
+const { test, expect } = require("@playwright/test");
+const fs = require("node:fs");
+const path = require("node:path");
+const { startStack, PASSWORD } = require("./stack.cjs");
+
+let stack;
+let suiteFailed = false;
+const contexts = [];
+
+test.describe.configure({ mode: "serial" });
+test.beforeAll(async () => { stack = await startStack(); });
+test.afterAll(async ({}, testInfo) => {
+  if (stack) {
+    if (suiteFailed) {
+      const retainedLogs = path.resolve(__dirname, "../../test-results/service-logs");
+      fs.cpSync(stack.logs, retainedLogs, { recursive: true });
+      console.error(`Browser E2E logs retained at ${retainedLogs}`);
+    }
+    await stack.stop();
+  }
+});
+test.afterEach(async ({}, testInfo) => {
+  const failed = testInfo.status !== testInfo.expectedStatus;
+  suiteFailed ||= failed;
+  await Promise.all(contexts.splice(0).map(async ({ context, pages }, index) => {
+    if (failed) {
+      const image = path.join(testInfo.outputDir, `browser-${index + 1}.png`);
+      const trace = path.join(testInfo.outputDir, `browser-${index + 1}.zip`);
+      try { if (pages[0]) { await pages[0].screenshot({ path: image, fullPage: true }); await testInfo.attach(`browser-${index + 1}`, { path: image, contentType: "image/png" }); } } catch {}
+      try { await context.tracing.stop({ path: trace }); await testInfo.attach(`trace-${index + 1}`, { path: trace, contentType: "application/zip" }); } catch {}
+    } else {
+      try { await context.tracing.stop(); } catch {}
+    }
+    await context.close();
+  }));
+});
+
+async function client(browser, url, viewport) {
+  const context = await browser.newContext({
+    httpCredentials: { username: "operator", password: PASSWORD },
+    viewport: viewport || { width: 1440, height: 900 },
+  });
+  await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
+  const record = { context, pages: [] }; contexts.push(record);
+  context.on("page", page => page.on("console", message => {
+    const text = message.text();
+    const expectedDisconnect = ["ERR_INTERNET_DISCONNECTED", "ERR_CONNECTION_REFUSED", "ERR_CONNECTION_RESET", "ERR_EMPTY_RESPONSE"].some(marker => text.includes(marker));
+    if (message.type() === "error" && !expectedDisconnect && !text.includes("status of 502")) console.error(`[browser console] ${text}`);
+  }));
+  const page = await context.newPage();
+  record.pages.push(page);
+  await page.goto(url);
+  return { context, page };
+}
+
+async function createSession(page, webURL = stack.webURLs[0]) {
+  await page.goto(`${webURL}/sessions/new`);
+  await page.getByTestId("session-pipeline").selectOption("hello@1");
+  await page.getByRole("button", { name: "Create session" }).click();
+  await expect(page).toHaveURL(/\/sessions\/[A-Za-z0-9_.@-]+$/);
+  await expect(page.getByTestId("message-composer")).toBeVisible();
+  await expect.poll(() => page.locator("html").evaluate(element => getComputedStyle(element).fontFamily)).toContain("ui-sans-serif");
+  await expect(page.getByTestId("chat-status")).toHaveAttribute("data-state", "caught-up", { timeout: 15_000 });
+  return page.url();
+}
+
+async function expectLiveOrCaughtUp(page) {
+  await expect(page.getByTestId("chat-status")).toHaveAttribute("data-state", /^(live|caught-up)$/);
+}
+
+test("PostgreSQL candidate advertises context support and exposes immutable reduction provenance", async ({ browser }) => {
+  test.skip(stack.storage !== "postgres" || !stack.contextReduction, "requires LASO integration candidate with reduction enabled on PostgreSQL");
+  const a = await client(browser, stack.webURLs[0]);
+  const advertised = await a.page.evaluate(async () => (await (await fetch("/api/laso/capabilities")).json()));
+  expect(advertised.advertised).toBe(true);
+  for (const name of ["sessions.durable", "sessions.ordered_turns", "sessions.sequential_execution", "sessions.event_replay", "sessions.sse", "sessions.context_generations", "sessions.run_context_snapshots", "sessions.context_reduction"]) {
+    expect(advertised.capabilities).toContain(name);
+  }
+
+  const sessionURL = await createSession(a.page, stack.webURLs[0]);
+  const sessionID = new URL(sessionURL).pathname.split("/").at(-1);
+  const b = await client(browser, `${stack.webURLs[1]}${new URL(sessionURL).pathname}`);
+  await expect(b.page.getByTestId("chat-status")).toHaveAttribute("data-state", "caught-up", { timeout: 15_000 });
+  for (let index = 1; index <= 6; index++) {
+    const sender = index % 2 === 1 ? a.page : b.page;
+    const message = `PostgreSQL context reduction turn ${index} ` + "x".repeat(180);
+    await sender.getByTestId("message-composer").fill(message);
+    await sender.getByTestId("send-turn").click();
+    for (const observer of [a.page, b.page]) {
+      await expect(observer.getByTestId("user-turn")).toHaveCount(index, { timeout: 15_000 });
+      await expect(observer.getByTestId("assistant-turn")).toHaveCount(index, { timeout: 30_000 });
+    }
+  }
+  const history = await a.page.evaluate(async id => (await (await fetch(`/api/laso/sessions/${encodeURIComponent(id)}/turns?limit=100&offset=0`)).json()), sessionID);
+  expect(history).toHaveLength(6);
+  const finalTurn = history.at(-1);
+  expect(finalTurn.run_id).toBeTruthy();
+  const context = await a.page.evaluate(async id => (await (await fetch(`/api/laso/sessions/${encodeURIComponent(id)}/context`)).json()), sessionID);
+  expect(context.current_generation.generation).toBeGreaterThan(0);
+  expect(context.current_generation).not.toHaveProperty("payload");
+  const snapshot = await a.page.evaluate(async runID => (await (await fetch(`/api/laso/runs/${encodeURIComponent(runID)}/context`)).json()), finalTurn.run_id);
+  expect(snapshot.session_id).toBe(sessionID);
+  expect(snapshot.session_turn_id).toBe(finalTurn.id);
+  expect(snapshot.turn_sequence).toBe(finalTurn.sequence);
+  expect(snapshot.context_generation).toBeGreaterThan(0);
+  expect(snapshot.context_generation_id).toBe(context.current_generation.id);
+  await expect(a.page.getByTestId("user-turn").first()).toContainText("PostgreSQL context reduction turn 1");
+  await expect(a.page.getByTestId("user-turn").last()).toContainText("PostgreSQL context reduction turn 6");
+  await a.page.goto(`${stack.webURLs[0]}/`);
+  await a.page.getByRole("button", { name: "System" }).click();
+  await expect(a.page.locator("#content")).toContainText("sessions.context_reduction");
+});
+
+test("two browser clients share durable ordered turns and recover through SSE replay and LASO restart", async ({ browser }, testInfo) => {
+  const a = await client(browser, stack.webURLs[0]);
+  const sessionURL = await createSession(a.page);
+  const clientURLB = `${stack.webURLs[1]}${new URL(sessionURL).pathname}`;
+  const b = await client(browser, clientURLB);
+  const streamCursors = [];
+  b.page.on("request", request => {
+    if (new URL(request.url()).pathname.endsWith("/events/stream")) {
+      streamCursors.push(request.headers()["last-event-id"] || "");
+    }
+  });
+  await expect(b.page.getByTestId("chat-status")).toHaveAttribute("data-state", "caught-up", { timeout: 15_000 });
+  await expect(b.page.locator("#session-list a[aria-current=page]")).toHaveCount(1);
+  const sessionID = new URL(sessionURL).pathname.split("/").at(-1);
+
+  await a.page.getByTestId("message-composer").fill("first turn from browser A");
+  await a.page.getByTestId("send-turn").click();
+  await expect(a.page.getByTestId("user-turn").filter({ hasText: "first turn from browser A" })).toBeVisible();
+  await expect(b.page.getByTestId("user-turn").filter({ hasText: "first turn from browser A" })).toBeVisible();
+  await expect(a.page.getByTestId("assistant-turn").first()).toBeVisible({ timeout: 30_000 });
+  await expect(b.page.getByRole("link", { name: "Run details" }).first()).toBeVisible();
+
+  await b.page.getByTestId("message-composer").fill("second turn");
+  await b.page.getByTestId("message-composer").press("Shift+Enter");
+  await b.page.getByTestId("message-composer").pressSequentially("from browser B");
+  await expect(b.page.getByTestId("message-composer")).toHaveValue("second turn\nfrom browser B");
+  await b.page.getByTestId("send-turn").press("Enter");
+  await expect(a.page.getByTestId("user-turn").filter({ hasText: "second turn" })).toContainText("from browser B");
+  await expect(b.page.getByTestId("assistant-turn").nth(1)).toBeVisible({ timeout: 30_000 });
+
+  const userBubbles = b.page.getByTestId("user-turn");
+  await expect(userBubbles).toHaveCount(2);
+  await expect(userBubbles.nth(0)).toContainText("first turn from browser A");
+  await expect(userBubbles.nth(1)).toContainText("second turn\nfrom browser B");
+  const screenshot = testInfo.outputPath("durable-session-chat.png");
+  await b.page.screenshot({ path: screenshot, fullPage: true });
+  await testInfo.attach("durable-session-chat", { path: screenshot, contentType: "image/png" });
+  // Restart only LASO-Web B to deterministically sever its active SSE response
+  // while leaving the independent browser page (and its durable event cursor) alive.
+  const cursorsBeforeDisconnect = streamCursors.length;
+  await stack.stopWeb(1);
+  await expect(b.page.getByTestId("chat-status")).toHaveAttribute("data-state", "reconnecting", { timeout: 10_000 });
+  await b.page.getByTestId("message-composer").fill("unsent draft survives replay rerender");
+  await a.page.getByTestId("message-composer").fill("third turn while client B is disconnected");
+  await a.page.getByTestId("send-turn").click();
+  await expect(a.page.getByTestId("user-turn")).toHaveCount(3);
+  await stack.startWeb(1);
+  await expect.poll(() => streamCursors.length, { timeout: 15_000 }).toBeGreaterThan(cursorsBeforeDisconnect);
+  expect(streamCursors.at(-1)).toMatch(/^[1-9][0-9]*$/);
+  await expect(b.page.getByTestId("user-turn").filter({ hasText: "third turn while client B is disconnected" })).toBeVisible({ timeout: 30_000 });
+  await expect(b.page.getByTestId("user-turn")).toHaveCount(3);
+  await expect(b.page.getByTestId("user-turn").nth(2)).toContainText("third turn while client B is disconnected");
+  await expect(b.page.getByTestId("message-composer")).toHaveValue("unsent draft survives replay rerender");
+
+  await expect(b.page.getByTestId("chat-status")).toHaveAttribute("data-state", "caught-up", { timeout: 15_000 });
+  await b.page.getByRole("link", { name: "Run details" }).first().click();
+  await expect(b.page).toHaveURL(/#\/run\//);
+  await b.page.goBack();
+  await expect(b.page).toHaveURL(clientURLB);
+  await expect(b.page.getByTestId("user-turn")).toHaveCount(3);
+  const refresh = await client(browser, clientURLB);
+  await expect(refresh.page.getByTestId("user-turn")).toHaveCount(3);
+  await expect(refresh.page.getByTestId("chat-status")).toHaveAttribute("data-state", "caught-up", { timeout: 15_000 });
+
+  await stack.stopLaso();
+  await expect(a.page.getByTestId("chat-status")).toHaveAttribute("data-state", /^(reconnecting|unavailable)$/, { timeout: 15_000 });
+  if (stack.canRestartPostgres) await stack.restartPostgres();
+  await stack.restartLaso();
+  await expectLiveOrCaughtUp(a.page);
+  await refresh.page.reload();
+  await expect(refresh.page.getByTestId("user-turn")).toHaveCount(3);
+  await expect(refresh.page).toHaveURL(clientURLB);
+  await expect(refresh.page.getByTestId("chat-status")).toHaveAttribute("data-state", "caught-up", { timeout: 15_000 });
+
+  a.page.once("dialog", dialog => dialog.accept());
+  await a.page.getByTestId("close-session").click();
+  await expect(a.page.getByTestId("closed-session-note")).toBeVisible();
+  await expect(a.page.getByTestId("message-composer")).toHaveCount(0);
+  await expect(b.page.getByTestId("chat-status")).toHaveAttribute("data-state", "closed", { timeout: 15_000 });
+  await expect(b.page.getByTestId("message-composer")).toHaveCount(0);
+  await expect(b.page.getByTestId("user-turn")).toHaveCount(3);
+  await expect(a.page.locator('#session-list a[data-state="closed"]')).toHaveCount(1);
+  expect(sessionID).toMatch(/^[A-Za-z0-9_.@-]+$/);
+});
+
+test("authenticated workspace covers runs, operator views, approvals, and LASO outage recovery", async ({ browser }) => {
+  const { page } = await client(browser, stack.webURLs[0]);
+  await expect(page.locator("#connection-label")).toHaveText("Connected", { timeout: 15_000 });
+  const capabilities = await page.evaluate(async () => (await (await fetch("/api/laso/capabilities")).json()));
+  if (stack.storage === "postgres") {
+    expect(capabilities.advertised).toBe(true);
+    expect(capabilities.capabilities).toContain("sessions.sse");
+  } else {
+    expect(capabilities).toEqual({ advertised: false, capabilities: [] });
+  }
+  const browserVisible = await page.evaluate(async () => {
+    const paths = ["/", "/app.js", "/sessions.js", "/api/laso/version", "/api/laso/capabilities"];
+    return (await Promise.all(paths.map(async route => await (await fetch(route)).text()))).join("\n");
+  });
+  expect(browserVisible).not.toContain("e2e-server-only-secret");
+  if (stack.storage === "postgres") {
+    expect(browserVisible).not.toContain(stack.postgresSchema);
+  }
+  await expect(page.locator("#pipeline-select")).toContainText("hello");
+  await page.locator("#pipeline-select").selectOption("hello@1");
+  await page.locator("#task-input").fill("browser standalone run");
+  await page.locator(".run-button").click();
+  await expect(page).toHaveURL(/#\/run\//);
+  await expect(page.locator("#content")).toContainText("browser standalone run", { timeout: 30_000 });
+  await expect(page.locator("#content")).toContainText("Completed", { timeout: 30_000 });
+
+  await page.getByRole("button", { name: "History" }).click();
+  await expect(page.locator("#content")).toContainText("browser standalone run");
+  await page.locator("#recent-runs").getByText("browser standalone run").click();
+  await expect(page).toHaveURL(/#\/run\//);
+  await expect(page.locator("#content")).toContainText("Started");
+
+  await page.getByRole("button", { name: "Workers" }).click();
+  await expect(page.locator("#content")).toContainText("No workers are registered");
+
+  await page.locator("#new-task").click();
+  await page.locator("#pipeline-select").selectOption("human-approval@1");
+  await page.locator("#task-input").fill("browser approval workflow");
+  await page.locator(".run-button").click();
+  await expect(page.locator("#content")).toContainText("WaitingApproval", { timeout: 30_000 });
+  await page.getByRole("button", { name: "Approvals" }).click();
+  await expect(page.locator("#content")).toContainText("LASO needs your approval", { timeout: 15_000 });
+  await page.getByRole("button", { name: "Approve" }).first().click();
+  await expect(page.locator("#notice")).toContainText("accepted the decision");
+  await page.getByRole("button", { name: "History" }).click();
+  await page.locator("#recent-runs").getByText("browser approval workflow").click();
+  await expect(page.locator("#content")).toContainText("Completed", { timeout: 30_000 });
+
+  await page.getByRole("button", { name: "Schedules" }).click();
+  await expect(page.locator("#content")).toContainText("No schedules configured");
+  await page.getByRole("button", { name: "System" }).click();
+  await expect(page.locator("#content")).toContainText("Connection");
+  await expect(page.locator("#content")).toContainText("ok");
+
+  if (stack.canRestartPostgres) {
+    await stack.stopPostgres();
+    const databaseOutage = await page.evaluate(async () => {
+      const response = await fetch("/api/laso/runs?limit=1&offset=0");
+      return { status: response.status, body: await response.text() };
+    });
+    expect([502, 503]).toContain(databaseOutage.status);
+    expect(databaseOutage.body).not.toContain("laso_web_pr20_");
+    expect(databaseOutage.body).not.toContain("password=");
+    await page.locator("#refresh").click();
+    await expect(page.locator("#content")).toContainText("Could not load runs.", { timeout: 15_000 });
+    await stack.startPostgres();
+    await stack.restartLaso();
+    await page.locator("#refresh").click();
+    await expect(page.locator("#connection-label")).toHaveText("Connected", { timeout: 20_000 });
+    await expect.poll(async () => await page.evaluate(async () => (await fetch("/api/laso/runs?limit=1&offset=0")).status), { timeout: 15_000 }).toBe(200);
+  }
+
+  await stack.stopLaso();
+  await page.locator("#refresh").click();
+  await expect(page.locator("#connection-label")).toHaveText("Reconnecting…", { timeout: 15_000 });
+  await stack.restartLaso();
+  await page.locator("#refresh").click();
+  await expect(page.locator("#connection-label")).toHaveText("Connected", { timeout: 20_000 });
+});
+
+test("mobile session creation, filtering, composer, run details, and return navigation work", async ({ browser }) => {
+  const { page } = await client(browser, stack.webURLs[1], { width: 390, height: 844 });
+  const sessionURL = await createSession(page, stack.webURLs[1]);
+  await page.getByTestId("message-composer").fill("mobile viewport turn");
+  await page.getByTestId("send-turn").click();
+  await expect(page.getByTestId("user-turn").filter({ hasText: "mobile viewport turn" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Run details" })).toBeVisible({ timeout: 30_000 });
+
+  const toggle = page.locator("#session-nav-toggle");
+  await expect(toggle).toHaveAccessibleName("Show session list");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(toggle).toHaveAccessibleName("Hide session list");
+  await expect(page.locator("#session-sidebar")).toBeVisible();
+  await page.getByRole("searchbox", { name: "Filter recent sessions" }).fill("mobile viewport turn");
+  await expect(page.getByTestId("session-item")).toContainText("mobile viewport turn");
+  await page.getByRole("searchbox", { name: "Filter recent sessions" }).fill("no matching label");
+  await expect(page.locator("#session-list")).toContainText("No recent sessions match");
+  await page.getByRole("searchbox", { name: "Filter recent sessions" }).fill("");
+  await page.getByRole("link", { name: /mobile viewport turn/ }).click();
+  await expect(page).toHaveURL(sessionURL);
+  await expect(page.getByTestId("user-turn")).toHaveCount(1);
+  await page.getByRole("link", { name: "Run details" }).click();
+  await expect(page).toHaveURL(/#\/run\//);
+  await page.goBack();
+  await expect(page).toHaveURL(sessionURL);
+  await expect(page.getByTestId("message-composer")).toBeVisible();
+});

@@ -24,6 +24,11 @@
   <div class="app-shell">
     <aside id="sidebar" class="sidebar" aria-label="Workspace navigation">
       <button id="new-task" class="new-task-button" type="button"><span aria-hidden="true">＋</span> New task</button>
+      <div id="sessions-sidebar" class="sidebar-section hidden">
+        <a id="new-chat-link" class="new-task-button" href="/sessions/new">＋ New chat</a>
+        <div class="section-label">RECENT SESSIONS</div>
+        <div id="recent-sessions" class="recent-runs"><p class="sidebar-empty">Loading sessions…</p></div>
+      </div>
       <div class="sidebar-section">
         <div class="section-label">RECENT WORK</div>
         <div id="recent-runs" class="recent-runs"><p class="sidebar-empty">Your runs will appear here.</p></div>
@@ -44,6 +49,8 @@
     </main>
   </div>
   <script src="/model.js" defer></script>
+  <script src="/capabilities.js" defer></script>
   <script src="/app.js" defer></script>
+  <script src="/sessions.js" defer></script>
 </body>
 </html>

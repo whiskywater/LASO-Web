@@ -18,6 +18,8 @@ The workspace and run-thread screenshots use a safe deterministic Hello-pipeline
 
 ![Mobile task workspace](docs/images/workspace-mobile.png)
 
+LASO-Web remains a Python standard-library application in production. `server.py` is the canonical server, `run.sh` starts it with Python, and the systemd unit runs Python directly. Go is not required or used by the production runtime.
+
 ## Workspace experience and API coverage
 
 LASO-Web opens on a task workspace rather than a metrics dashboard. Choose a registered pipeline, describe the task, and follow that run as a thread: your submitted request, readable output LASO actually returned, and a compact state summary. Lifecycle activity, worker records, and raw API objects remain available in collapsed details. Recent runs are shown by task/pipeline label; a run link survives page refresh and browser back/forward navigation. The layout works as a collapsible desktop sidebar and a mobile navigation drawer.
@@ -30,6 +32,8 @@ Based on LASO's published `/api/v1` interface (see its [API reference](https://g
 * worker inventory and capabilities from `/workers`;
 * contextual pending approvals/worker requests on their associated run, plus a full decision queue;
 * read-only schedule listing and a secondary system-status view.
+
+The **Sessions** experience uses LASO's durable session API as the sole source of conversation identity and ordered history. Open `/sessions/new` to create a session, then share or bookmark its `/sessions/<id>` URL. Separate LASO-Web processes read and update the same session through LASO; SSE event IDs drive reconnect/replay while the displayed transcript is reloaded from LASO. LASO-Web does not save transcripts in browser storage or a local database. See [durable sessions](docs/laso-sessions.md).
 
 LASO assigns workers through pipeline definitions; it does not expose a separate operator API for changing worker assignments, so this UI does not invent one. Schedule listing is supported, but schedule editing is not included in this first release. Artifact listing/browsing, live event streams, worker-specific health probes, and configuration editing are also omitted because the current HTTP interface does not provide those GUI operations. LASO exposes no CORS headers; same-origin proxying is used instead.
 
@@ -89,6 +93,13 @@ sudo install -m 0644 -D static/index.html /opt/laso-web/static/index.html
 sudo install -m 0644 -D static/app.js /opt/laso-web/static/app.js
 sudo install -m 0644 -D static/model.js /opt/laso-web/static/model.js
 sudo install -m 0644 -D static/style.css /opt/laso-web/static/style.css
+sudo install -m 0644 -D static/session.html /opt/laso-web/static/session.html
+sudo install -m 0644 -D static/session.js /opt/laso-web/static/session.js
+sudo install -m 0644 -D static/session-model.js /opt/laso-web/static/session-model.js
+sudo install -m 0644 -D static/session.css /opt/laso-web/static/session.css
+sudo install -m 0644 -D static/session-mobile.css /opt/laso-web/static/session-mobile.css
+sudo install -m 0644 -D static/sessions.js /opt/laso-web/static/sessions.js
+sudo install -m 0644 -D static/capabilities.js /opt/laso-web/static/capabilities.js
 sudo install -m 0644 deploy/systemd/laso-web.service /etc/systemd/system/laso-web.service
 ```
 
@@ -115,14 +126,19 @@ Upstream requests time out after 8 seconds. Browser requests have a 10-second de
 
 ## Development and tests
 
-Node.js 22 is used only to run the dependency-free UI model tests; it is not required to run or deploy LASO-Web.
+Node.js 22 and Playwright are development-only for model and browser acceptance; they are not required to run or deploy LASO-Web.
 
 ```sh
 python3 -m unittest discover -s tests -v
 node --test tests/test_ui_model.cjs
 node --check static/model.js
 node --check static/app.js
+node --check static/session.js
+node --check static/sessions.js
+node --test tests/test_session_model.cjs tests/test_capabilities.cjs
 ```
+
+The reproducible Playwright workflows exercise real Python frontend processes. The legacy compatibility lane uses a pinned SQLite-era LASO build; the PostgreSQL lane uses current LASO `main` (`568edd2c9934ad10553c822af977113227379931`) with two LASO and two Python LASO-Web processes against isolated test databases. See [PostgreSQL integration](docs/postgres-integration.md). Production LASO-Web remains API-only; its Python process never opens a PostgreSQL connection.
 
 An optional real-server smoke test uses a temporary SQLite directory, registers the deterministic Hello pipeline, and creates/polls one run through LASO-Web's HTTP adapter:
 
